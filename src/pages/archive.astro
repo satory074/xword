@@ -1,0 +1,11 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout title="過去の問題 — xword">
+  <script>
+    import { boot } from "../app/archive";
+    import { start } from "../app/real";
+    start(boot);
+  </script>
+</Layout>

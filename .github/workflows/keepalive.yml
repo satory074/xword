@@ -1,0 +1,18 @@
+# Supabase 無料枠は 1 週間無アクセスで一時停止するので、毎日 1 回 RPC を叩いて起こしておく。
+name: Keep Supabase awake
+
+on:
+  schedule:
+    - cron: "0 21 * * *" # JST 06:00
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call list_puzzle_dates
+        run: |
+          curl -fsS -X POST "${{ vars.PUBLIC_SUPABASE_URL }}/rest/v1/rpc/list_puzzle_dates" \
+            -H "apikey: ${{ vars.PUBLIC_SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ vars.PUBLIC_SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json" -d '{}'

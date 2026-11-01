@@ -1,0 +1,11 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout title="マイページ — xword">
+  <script>
+    import { boot } from "../app/mypage";
+    import { start } from "../app/real";
+    start(boot);
+  </script>
+</Layout>

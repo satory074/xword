@@ -1,0 +1,453 @@
+@import "tailwindcss";
+
+:root {
+  /* 紙と鉛筆のクロスワード。生成り×墨×朱 */
+  --bg: #f7f3ea;
+  --surface: #fffdf8;
+  --surface-2: #efe9dc;
+  --border: #d9d1c0;
+  --ink: #1d1b17;
+  --ink-soft: #6b655a;
+  --accent: #d9482b; /* 朱: 選択語・強調 */
+  --accent-soft: #fbe3dc;
+  --ok: #2f8f5b;
+  --ok-soft: #dff3e6;
+  --wrong: #c62828;
+  --wrong-soft: #ffd9d6;
+  --cursor: #ffd166;
+  --r-md: 12px;
+  --r-sm: 8px;
+  --shadow-card: 0 1px 4px rgba(40, 30, 10, 0.12);
+  --cell: min(46px, calc((100vw - 2.5rem) / 7));
+}
+
+html {
+  background: var(--bg);
+  color: var(--ink);
+  color-scheme: light;
+}
+body {
+  font-family:
+    "Hiragino Sans", "Hiragino Kaku Gothic ProN", "BIZ UDPGothic", Meiryo, system-ui, sans-serif;
+  line-height: 1.6;
+  -webkit-tap-highlight-color: transparent;
+}
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+.wrap {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 1rem 1rem 3rem;
+}
+h1 {
+  font-size: 1.25rem;
+  font-weight: 800;
+  margin: 0.25rem 0 0.75rem;
+}
+h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 1rem 0 0.4rem;
+}
+a {
+  color: var(--accent);
+}
+
+/* ---- ヘッダー ---- */
+.site-header {
+  border-bottom: 1px solid var(--border);
+  background: rgba(247, 243, 234, 0.94);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  backdrop-filter: blur(6px);
+}
+.header-inner {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 0.5rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.brand {
+  font-weight: 900;
+  font-size: 1.2rem;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.brand-accent {
+  color: var(--accent);
+}
+.header-nav {
+  display: flex;
+  gap: 0.15rem;
+  flex: 1;
+  overflow-x: auto;
+}
+.header-nav a {
+  color: var(--ink-soft);
+  text-decoration: none;
+  font-size: 0.88rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: var(--r-sm);
+  white-space: nowrap;
+}
+.header-nav a:hover,
+.header-nav a.is-active {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.header-user {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+
+/* ---- 汎用 ---- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-card);
+}
+.pad {
+  padding: 1rem;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: var(--r-sm);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.92rem;
+  cursor: pointer;
+  text-decoration: none;
+  transition: filter 0.12s;
+}
+.btn:hover {
+  filter: brightness(0.97);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+.btn-sm {
+  padding: 0.3rem 0.65rem;
+  font-size: 0.82rem;
+}
+.btn-ghost {
+  background: transparent;
+}
+.muted {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+.error-panel {
+  border: 1px solid var(--wrong);
+  border-radius: var(--r-md);
+  padding: 1rem;
+  color: var(--wrong);
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+}
+.toast {
+  position: fixed;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: #fff;
+  border-radius: var(--r-md);
+  padding: 0.7rem 1.1rem;
+  box-shadow: var(--shadow-card);
+  z-index: 50;
+  font-size: 0.92rem;
+  max-width: 90vw;
+  white-space: pre-wrap;
+}
+.toast.toast-error {
+  background: var(--wrong);
+}
+.new-puzzle-banner {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+/* ---- 盤面ページ ---- */
+.play-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.play-title {
+  margin: 0.25rem 0;
+}
+.timer {
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.play-main {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+@media (min-width: 720px) {
+  .play-main {
+    grid-template-columns: auto 1fr;
+    align-items: start;
+  }
+  .play-left {
+    position: sticky;
+    top: 3.5rem;
+  }
+}
+.xw-grid {
+  display: grid;
+  grid-template-columns: repeat(7, var(--cell));
+  grid-template-rows: repeat(7, var(--cell));
+  gap: 0;
+  border: 2px solid var(--ink);
+  background: var(--ink);
+  width: max-content;
+  margin: 0 auto;
+  user-select: none;
+}
+.xw-cell {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(var(--cell) * 0.5);
+  font-weight: 700;
+  cursor: pointer;
+}
+.xw-cell.is-black {
+  background: var(--ink);
+  cursor: default;
+}
+.xw-cell.is-word {
+  background: var(--accent-soft);
+}
+.xw-cell.is-cursor {
+  background: var(--cursor);
+}
+.xw-cell.is-wrong .xw-ch {
+  color: var(--wrong);
+  text-decoration: line-through;
+}
+.xw-cell.is-wrong {
+  background: var(--wrong-soft);
+}
+.xw-cell.is-revealed .xw-ch {
+  color: var(--ink-soft);
+}
+.xw-cell.is-solved {
+  background: var(--ok-soft);
+}
+.xw-num {
+  position: absolute;
+  top: 1px;
+  left: 3px;
+  font-size: calc(var(--cell) * 0.24);
+  font-weight: 600;
+  color: var(--ink-soft);
+  line-height: 1;
+}
+.current-clue {
+  margin: 0.6rem auto 0.4rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  font-size: 0.92rem;
+  min-height: 2.4rem;
+  max-width: calc(var(--cell) * 7);
+}
+.clue-dir {
+  font-weight: 700;
+  color: var(--accent);
+  margin-right: 0.3rem;
+}
+.clue-len {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  margin-left: 0.25rem;
+}
+.hidden-input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  left: -9999px;
+}
+
+/* ---- キーボード ---- */
+.kb {
+  display: grid;
+  gap: 0.25rem;
+  max-width: 440px;
+  margin: 0 auto;
+}
+.kb-row {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 0.25rem;
+}
+.kb-row.kb-ctrl {
+  grid-template-columns: 1fr 2fr 1fr 1fr;
+}
+.kb-key {
+  height: 2.4rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 1.05rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--ink);
+  padding: 0;
+}
+.kb-key:active {
+  background: var(--surface-2);
+}
+.kb-mod {
+  background: var(--surface-2);
+}
+.kb-del {
+  background: var(--accent-soft);
+}
+.kb-wide {
+  font-size: 0.9rem;
+}
+
+.play-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0.75rem 0;
+  justify-content: center;
+}
+
+/* ---- カギ ---- */
+.clues ol {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.clues li {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+.clues li:hover {
+  background: var(--surface-2);
+}
+.clues li.is-active {
+  background: var(--accent-soft);
+}
+.clues li.is-filled .clue-text {
+  color: var(--ink-soft);
+}
+.clue-num {
+  font-weight: 700;
+  min-width: 1.6em;
+  text-align: right;
+}
+.clue-text {
+  flex: 1;
+}
+
+.solved-panel {
+  margin-top: 0.5rem;
+  text-align: center;
+}
+.solved-panel h2 {
+  margin: 0 0 0.4rem;
+  font-size: 1.3rem;
+}
+
+/* ---- アーカイブ・マイページ ---- */
+.archive-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.archive-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.55rem 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.archive-status {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+.stat-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 0.9rem;
+  text-align: center;
+}
+.stat-value {
+  font-size: 1.8rem;
+  font-weight: 800;
+}
+.stat-unit {
+  font-size: 0.85rem;
+  margin-left: 0.15rem;
+  color: var(--ink-soft);
+}
+.stat-label {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+/* ---- フッター ---- */
+.site-footer {
+  border-top: 1px solid var(--border);
+  margin-top: 2rem;
+}
+.site-footer p {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  padding: 1rem 0;
+}

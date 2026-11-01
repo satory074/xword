@@ -1,0 +1,17 @@
+# build output
+dist/
+.astro/
+
+# dependencies
+node_modules/
+
+# environment variables（anon key は公開値だが URL とセットで .env に置くため念のため除外）
+.env
+.env.production
+
+# macOS
+.DS_Store
+
+# 生成物・秘密（語彙バンクと解答入り問題は ../xword-private/ に置く）
+out/
+private/
