@@ -1,10 +1,10 @@
 // 純ロジックの不変条件テスト。実行: npx tsx scripts/smoketest.ts
 // 件数ではなく「壊れたら困る不変条件」を 1 つずつ検証する:
 //   1) 同梱テンプレートが合法  2) カナ正規化が不動点で SQL と変換表が一致  3) 語彙バンク（あれば）が健全
-//   4) 埋めが正しく決定的  5) 採点が正しい  6) 記録の優劣順序  7) 連続日数  8) 生成結果に答えが漏れない
+//   4) 埋めが正しく決定的  5) 採点が正しい  6) 記録の優劣順序  7) 連続日数  8) 生成結果に答えが漏れず、難しいカギが公平な位置にある
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { candidates, loadBank, type WordEntry } from "../src/lib/bank";
+import { candidates, lintEntry, loadBank, type WordEntry } from "../src/lib/bank";
 import { addDays, diffDays, fmtDateJa, isDateKey, jstDateKey } from "../src/lib/date";
 import { deriveSlots, scoreCells, solutionFromAnswers, validateTemplate, cellSlotMap } from "../src/lib/grid";
 import { DASH_FROM, DASH_TO, GRID_KANA, normalizeKana, SMALL_FROM, SMALL_TO, toHiragana } from "../src/lib/kana";
@@ -63,6 +63,11 @@ const templates = readTemplates();
   } else {
     console.log("[bank] skipped（../xword-private/words が無い）");
   }
+  // レベル別配列（clues2 / clues3）も漏れ lint の対象で、2 文字語に clues3 は付けられない
+  const base: WordEntry = { kana: "テスト", surface: "試験", category: "x", difficulty: 1, clues: ["ok"] };
+  assert(lintEntry(base).length === 0, "正常エントリは lint を通る");
+  assert(lintEntry({ ...base, clues3: ["テストを含む"] }).length > 0, "clues3 の答え漏れを検出");
+  assert(lintEntry({ ...base, kana: "テス", clues3: ["x"] }).length > 0, "2 文字語の clues3 を拒否");
 }
 
 // ---- 合成バンク（埋めアルゴリズムの検査用。日本語の意味は持たない） ----
@@ -81,7 +86,16 @@ function syntheticBank() {
       if (seen.has(k) || k[0] === "ン") continue;
       seen.add(k);
       count++;
-      entries.push({ kana: k, surface: k, category: "fixture", difficulty: rng.int(1, 10) > 9 ? 3 : 1, clues: [`fixture ${entries.length}`] });
+      const i = entries.length;
+      entries.push({
+        kana: k,
+        surface: k,
+        category: "fixture",
+        difficulty: rng.int(1, 10) > 9 ? 3 : 1,
+        clues: [`fixture ${i}`],
+        clues2: [`f2 ${i}`],
+        ...(len >= 3 ? { clues3: [`f3 ${i}`] } : {}),
+      });
     }
   }
   const { bank, errors } = loadBank(entries);
@@ -195,10 +209,16 @@ const synth = syntheticBank();
   const used1 = new Set(Object.values(p1.answers));
   for (const kana of Object.values(p2.answers)) assert(!used1.has(kana), `翌日に同じ語 ${kana} を使わない`);
   assert(p1.solution.length === 49 && Array.from(p1.solution).filter((c) => c === "#").length === p1.spec.grid.join("").split("#").length - 1, "解答の黒マス数が盤面と一致");
-  const cm = cellSlotMap(deriveSlots(p1.spec.grid));
+  const slots1 = deriveSlots(p1.spec.grid);
+  const cm = cellSlotMap(slots1);
   assert(p1.spec.slots.every((s) => s.clue.length > 0), "全スロットにカギがある");
   assert(cm.size === p1.solution.replace(/#/g, "").length, "全白マスがいずれかの語に属する");
-  console.log("[generate] OK");
+  // カギのレベル配分の公平性: 配分の合計 = スロット数で lv3 が 1 つ以上、lv3 は完全交差の語だけ、lv3 同士は交差しない
+  const lv3 = slots1.filter((s) => p1.levels[s.id] === 3);
+  assert(p1.mix[1] + p1.mix[2] + p1.mix[3] === slots1.length && p1.mix[3] > 0, `mix がスロット数に一致し lv3 がある (${JSON.stringify(p1.mix)})`);
+  assert(lv3.every((s) => s.cells.every((c) => cm.get(c)!.length === 2)), "lv3 カギは完全交差スロットのみ");
+  assert(lv3.every((a) => lv3.every((b) => a.id >= b.id || !a.cells.some((c) => b.cells.includes(c)))), "lv3 スロット同士は交差しない");
+  console.log(`[generate] OK (mix ${p1.mix[1]}/${p1.mix[2]}/${p1.mix[3]})`);
 }
 
 console.log("✅ smoketest passed");

@@ -7,26 +7,43 @@ import { validateTemplate, type Template } from "../../src/lib/grid";
 export const PRIVATE_DIR = resolve(process.cwd(), "../xword-private");
 export const DEFAULT_BANK_DIR = join(PRIVATE_DIR, "words");
 export const DEFAULT_OUT_DIR = join(PRIVATE_DIR, "out");
+export const DEFAULT_WIKI_DIR = join(PRIVATE_DIR, "wiki");
 export const TEMPLATES_PATH = resolve(process.cwd(), "data/templates/7x7.json");
 
-export function readBankEntries(dir: string): WordEntry[] {
-  const files = readdirSync(dir)
+const KNOWN_KEYS = new Set(["kana", "surface", "category", "difficulty", "clues", "clues2", "clues3", "note"]);
+
+/** 1 ファイル分のエントリ（category 未指定はファイル名）。未知のキー（clue2 などの typo）は例外 */
+export function readBankFile(path: string, defaultCategory: string): WordEntry[] {
+  const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  if (!Array.isArray(raw)) throw new Error(`${path}: 配列ではない`);
+  const entries: WordEntry[] = [];
+  for (const e of raw as Record<string, unknown>[]) {
+    for (const k of Object.keys(e)) {
+      if (!KNOWN_KEYS.has(k)) throw new Error(`${path}: [${String(e.surface ?? e.kana ?? "?")}] 未知のキー "${k}"`);
+    }
+    const list = (v: unknown): string[] | undefined => (v === undefined ? undefined : Array.isArray(v) ? v.map(String) : []);
+    entries.push({
+      kana: String(e.kana ?? ""),
+      surface: String(e.surface ?? ""),
+      category: String(e.category ?? defaultCategory),
+      difficulty: Number(e.difficulty ?? 1),
+      clues: list(e.clues) ?? [],
+      clues2: list(e.clues2),
+      clues3: list(e.clues3),
+    });
+  }
+  return entries;
+}
+
+export function bankFiles(dir: string): string[] {
+  return readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
     .sort();
+}
+
+export function readBankEntries(dir: string): WordEntry[] {
   const entries: WordEntry[] = [];
-  for (const f of files) {
-    const raw = JSON.parse(readFileSync(join(dir, f), "utf8")) as unknown;
-    if (!Array.isArray(raw)) throw new Error(`${f}: 配列ではない`);
-    for (const e of raw as Partial<WordEntry>[]) {
-      entries.push({
-        kana: String(e.kana ?? ""),
-        surface: String(e.surface ?? ""),
-        category: String(e.category ?? f.replace(/\.json$/, "")),
-        difficulty: Number(e.difficulty ?? 1),
-        clues: Array.isArray(e.clues) ? e.clues.map(String) : [],
-      });
-    }
-  }
+  for (const f of bankFiles(dir)) entries.push(...readBankFile(join(dir, f), f.replace(/\.json$/, "")));
   return entries;
 }
 

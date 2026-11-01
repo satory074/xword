@@ -13,7 +13,8 @@
     "gen": "tsx scripts/gen.ts",
     "push": "tsx scripts/push.ts",
     "stress": "tsx scripts/stress.ts",
-    "bankstats": "tsx scripts/bankstats.ts"
+    "bankstats": "tsx scripts/bankstats.ts",
+    "wiki": "tsx scripts/wiki.ts"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.4",

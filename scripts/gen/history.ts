@@ -32,7 +32,11 @@ export function addToHistory(h: History, e: HistoryEntry): void {
   }
 }
 
-export function readHistoryDir(dir: string): History {
+/**
+ * out/ の履歴を読む。before を渡すとその日付より前のファイルだけ（再生成で、作り直す日以降の旧ファイルを
+ * 履歴に数えないため。数えると直近 30 日分 ≈600 語がクールダウンで使えなくなる）。
+ */
+export function readHistoryDir(dir: string, opts: { before?: string } = {}): History {
   const h = emptyHistory();
   let files: string[] = [];
   try {
@@ -43,19 +47,20 @@ export function readHistoryDir(dir: string): History {
   for (const f of files.sort()) {
     const raw = JSON.parse(readFileSync(join(dir, f), "utf8")) as Partial<HistoryEntry>;
     if (!raw.date || !isDateKey(raw.date) || !raw.answers) continue;
+    if (opts.before && raw.date >= opts.before) continue;
     addToHistory(h, { date: raw.date, answers: raw.answers, clueIndex: raw.clueIndex });
   }
   return h;
 }
 
-/** 生成日 date に対する除外集合と「最後に使ってからの日数」 */
+/** 生成日 date に対する除外集合と「最後に使ってからの日数」。date より後の履歴（未来日）は除外しない */
 export function cooldown(h: History, date: string, days = COOLDOWN_DAYS): { exclude: Set<string>; recency: Map<string, number> } {
   const exclude = new Set<string>();
   const recency = new Map<string, number>();
   for (const [kana, last] of h.lastUsed) {
     const d = diffDays(last, date);
     recency.set(kana, d);
-    if (d < days) exclude.add(kana);
+    if (d >= 0 && d < days) exclude.add(kana);
   }
   return { exclude, recency };
 }

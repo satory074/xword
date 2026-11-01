@@ -6,13 +6,29 @@ import { isGridWord, kanaLength, normalizeKana, toHiragana } from "./kana";
 export const MIN_WORD_LEN = 2;
 export const MAX_CLUE_LEN = 60;
 
-/** words/*.json の 1 エントリ */
+/** カギのレベル: 1 直接 / 2 ひとひねり / 3 ひねり（交差のマスと合わせて解く前提） */
+export type Level = 1 | 2 | 3;
+export const LEVELS: readonly Level[] = [1, 2, 3];
+
+/** words/*.json の 1 エントリ。clues が lv1、clues2 / clues3 は任意（別配列にして差分を純追加に保つ） */
 export interface WordEntry {
   kana: string;
   surface: string;
   category: string;
   difficulty: number;
   clues: string[];
+  clues2?: string[];
+  clues3?: string[];
+}
+
+/**
+ * 正規化したカギ。diff は出自エントリの difficulty。
+ * 同音統合で語の difficulty は min になるが、希な語義（雁）向けのカギの実効難易度はこれで保つ。
+ */
+export interface Clue {
+  text: string;
+  level: Level;
+  diff: number;
 }
 
 /** 同音異義語を統合した 1 語 */
@@ -23,7 +39,8 @@ export interface BankWord {
   difficulty: number;
   surfaces: string[];
   categories: string[];
-  clues: string[];
+  /** エントリ順 × (lv1 → lv2 → lv3)。clueIndex はこの配列の添字 */
+  clues: Clue[];
 }
 
 export interface Bank {
@@ -46,6 +63,23 @@ export function clueLeaks(clue: string, kana: string, surfaces: string[]): strin
   return null;
 }
 
+/** エントリの 3 配列を正規化（lv1 → lv2 → lv3 の順） */
+export function entryClues(e: WordEntry): Clue[] {
+  const out: Clue[] = [];
+  const lists: [Level, string[] | undefined][] = [[1, e.clues], [2, e.clues2], [3, e.clues3]];
+  for (const [level, list] of lists) for (const text of list ?? []) out.push({ text, level, diff: e.difficulty });
+  return out;
+}
+
+/** 指定レベルのカギの添字（昇順） */
+export function cluesAt(w: BankWord, level: Level): number[] {
+  const idx: number[] = [];
+  w.clues.forEach((c, i) => {
+    if (c.level === level) idx.push(i);
+  });
+  return idx;
+}
+
 export function lintEntry(e: WordEntry): string[] {
   const errs: string[] = [];
   const tag = `[${e.surface || "?"} / ${e.kana || "?"}]`;
@@ -59,12 +93,19 @@ export function lintEntry(e: WordEntry): string[] {
   if (typeof e.surface !== "string" || e.surface === "") errs.push(`${tag} surface が空`);
   if (typeof e.category !== "string" || e.category === "") errs.push(`${tag} category が空`);
   if (![1, 2, 3].includes(e.difficulty)) errs.push(`${tag} difficulty は 1〜3`);
-  if (!Array.isArray(e.clues) || e.clues.length === 0) {
-    errs.push(`${tag} clues が空`);
-  } else {
-    for (const c of e.clues) {
+  if (!Array.isArray(e.clues) || e.clues.length === 0) errs.push(`${tag} clues が空`);
+  const lists: [string, Level, unknown][] = [["clues", 1, e.clues], ["clues2", 2, e.clues2], ["clues3", 3, e.clues3]];
+  for (const [key, level, list] of lists) {
+    if (list === undefined) continue;
+    if (!Array.isArray(list)) {
+      errs.push(`${tag} ${key} が配列でない`);
+      continue;
+    }
+    // lv3 は「交差のマスと合わせて解く」前提。2 文字語は候補が多く交差でも決まらないので付けない
+    if (level === 3 && list.length > 0 && len === 2) errs.push(`${tag} 2 文字語に clues3 は付けない`);
+    for (const c of list) {
       if (typeof c !== "string" || c.trim() === "") {
-        errs.push(`${tag} 空のカギ`);
+        errs.push(`${tag} ${key} に空のカギ`);
         continue;
       }
       if (kanaLength(c) > MAX_CLUE_LEN) errs.push(`${tag} カギが長すぎる（${kanaLength(c)} > ${MAX_CLUE_LEN}）: ${c}`);
@@ -90,7 +131,7 @@ export function loadBank(entries: WordEntry[]): { bank: Bank; errors: string[] }
       cur.difficulty = Math.min(cur.difficulty, e.difficulty);
       if (!cur.surfaces.includes(e.surface)) cur.surfaces.push(e.surface);
       if (!cur.categories.includes(e.category)) cur.categories.push(e.category);
-      for (const c of e.clues) if (!cur.clues.includes(c)) cur.clues.push(c);
+      for (const c of entryClues(e)) if (!cur.clues.some((x) => x.text === c.text)) cur.clues.push(c);
     } else {
       merged.set(e.kana, {
         kana: e.kana,
@@ -98,15 +139,15 @@ export function loadBank(entries: WordEntry[]): { bank: Bank; errors: string[] }
         difficulty: e.difficulty,
         surfaces: [e.surface],
         categories: [e.category],
-        clues: [...e.clues],
+        clues: entryClues(e),
       });
     }
   }
   // 統合後に、他の表記が別エントリのカギへ漏れていないか再検査
   for (const w of merged.values()) {
     for (const c of w.clues) {
-      const leak = clueLeaks(c, w.kana, w.surfaces);
-      if (leak) errors.push(`[${w.surfaces.join("/")} / ${w.kana}] ${leak}: ${c}`);
+      const leak = clueLeaks(c.text, w.kana, w.surfaces);
+      if (leak) errors.push(`[${w.surfaces.join("/")} / ${w.kana}] ${leak}: ${c.text}`);
     }
   }
 

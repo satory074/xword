@@ -1,7 +1,8 @@
-// 語彙バンクの統計: 長さ・難易度・カテゴリ別の語数と、薄い (長さ, 位置, 文字) バケツ。
+// 語彙バンクの統計: 長さ・難易度・カテゴリ別の語数、カギのレベル網羅率、薄い (長さ, 位置, 文字) バケツ。
+//   網羅率の目標: lv2 欠 = 0、lv3 欠（difficulty 1 かつ 3 文字以上）= 0。difficulty ≥ 2 の語には clues3 を書かない（カギは直球に留める）
 import { parseArgs } from "node:util";
-import { GRID_KANA } from "../src/lib/kana";
-import { DEFAULT_BANK_DIR, readBank } from "./gen/bankio";
+import { GRID_KANA, kanaLength } from "../src/lib/kana";
+import { DEFAULT_BANK_DIR, readBank, readBankEntries } from "./gen/bankio";
 
 const { values } = parseArgs({ options: { bank: { type: "string", default: DEFAULT_BANK_DIR } } });
 const { bank, errors, entryCount } = readBank(values.bank);
@@ -10,15 +11,44 @@ console.log(`エントリ ${entryCount} → 語 ${bank.words.length}`);
 
 const byLen = new Map<number, number>();
 const byDiff = new Map<number, number>();
-const byCat = new Map<string, number>();
 for (const w of bank.words) {
   byLen.set(w.len, (byLen.get(w.len) ?? 0) + 1);
   byDiff.set(w.difficulty, (byDiff.get(w.difficulty) ?? 0) + 1);
-  for (const c of w.categories) byCat.set(c, (byCat.get(c) ?? 0) + 1);
 }
 console.log("長さ:", [...byLen.entries()].sort().map(([k, v]) => `${k}:${v}`).join(" "));
 console.log("難易度:", [...byDiff.entries()].sort().map(([k, v]) => `${k}:${v}`).join(" "));
-console.log("カテゴリ:", [...byCat.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(" "));
+
+// カギの網羅率（エントリ単位・カテゴリ別）
+interface Cov { n: number; noLv2: number; noLv3: number; needLv3: number; hard: number; clues: number }
+const cov = new Map<string, Cov>();
+const total: Cov = { n: 0, noLv2: 0, noLv3: 0, needLv3: 0, hard: 0, clues: 0 };
+const add = (c: Cov, e: { difficulty: number; kana: string; clues: string[]; clues2?: string[]; clues3?: string[] }) => {
+  c.n++;
+  c.clues += e.clues.length + (e.clues2?.length ?? 0) + (e.clues3?.length ?? 0);
+  if (!e.clues2?.length) c.noLv2++;
+  if (e.difficulty >= 2) c.hard++;
+  else if (kanaLength(e.kana) >= 3) {
+    c.needLv3++;
+    if (!e.clues3?.length) c.noLv3++;
+  }
+};
+const entries = readBankEntries(values.bank);
+for (const e of entries) {
+  const c = cov.get(e.category) ?? { n: 0, noLv2: 0, noLv3: 0, needLv3: 0, hard: 0, clues: 0 };
+  add(c, e);
+  cov.set(e.category, c);
+  add(total, e);
+}
+const fmt = (k: string, c: Cov) => `${k.padEnd(9)} ${String(c.n).padStart(4)} 語  lv2欠 ${String(c.noLv2).padStart(4)}  lv3欠 ${String(c.noLv3).padStart(4)}/${String(c.needLv3).padStart(4)}  難語 ${String(c.hard).padStart(3)}  カギ ${c.clues}`;
+console.log("網羅率（lv3 欠は difficulty 1 かつ 3 文字以上のうち）:");
+for (const [k, c] of [...cov.entries()].sort((a, b) => b[1].n - a[1].n)) console.log("  " + fmt(k, c));
+console.log("  " + fmt("合計", total));
+
+// 同音統合で difficulty が食い違う語（統合後は min になる。カギの実効難易度は出自エントリの difficulty）
+const diffByKana = new Map<string, Set<number>>();
+for (const e of entries) diffByKana.set(e.kana, (diffByKana.get(e.kana) ?? new Set()).add(e.difficulty));
+const mixed = [...diffByKana.entries()].filter(([, s]) => s.size > 1).map(([k, s]) => `${k}(${[...s].sort().join("/")})`);
+if (mixed.length) console.log(`同音統合で difficulty が異なる語: ${mixed.join(" ")}`);
 
 // 文字別の出現（薄い文字を知る）
 const charCount = new Map<string, number>();

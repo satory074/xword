@@ -15,9 +15,11 @@ npm run build      # dist/ に静的ファイル生成
 npm run typecheck  # astro check
 npm run test       # smoketest（純ロジック・テンプレート・語彙バンク lint）+ domtest（jsdom、フェイク Api 注入）
 
-npm run bankstats                         # 語彙バンクの統計（長さ別・薄い文字）
-npm run stress -- --days 60               # 60 日連続生成の成功率・再利用間隔を計測（ファイルは書かない）
+npm run bankstats                         # 語彙バンクの統計（長さ別・薄い文字・カギのレベル網羅率）
+npm run wiki -- --file animals            # 表記を ja.wikipedia で引いて要約と閲覧数を ../xword-private/wiki/ にキャッシュ（カギ執筆の裏取り用）
+npm run stress -- --days 60               # 60 日連続生成の成功率・再利用間隔・カギ配分を計測（ファイルは書かない）
 npm run gen -- --date 2026-11-02 --days 30   # 問題生成 → ../xword-private/out/<date>.json + preview.html
+npm run gen -- --date 2026-11-02 --days 30 --force --mix 24/48/28 --hard 3   # 作り直し（開始日以降の旧ファイルは履歴に数えない）。--mix/--hard で配分の実験
 npm run push -- --dry                     # 登録内容の確認
 npm run push                              # 未来日の問題を Supabase に登録（.env の SERVICE_ROLE_KEY）
 ```
@@ -32,7 +34,7 @@ src/lib/    純 TS（DOM・supabase 依存なし）: kana（正規化）/ grid�
 src/app/    DOM 層: supabase / auth / api（Api 実装）/ real（エントリ）/ header / ui
             puzzle（盤面・入力・答え合わせ）/ keyboard（50 音）/ sync / archive / mypage
 src/pages/  index（今日 / ?d=YYYY-MM-DD）/ archive / mypage
-scripts/    gen.ts（生成 CLI）/ gen/{fill,lint,history,generate,preview,bankio}.ts / push.ts / stress.ts / bankstats.ts
+scripts/    gen.ts（生成 CLI）/ gen/{fill,lint,level,history,generate,preview,bankio}.ts / push.ts / stress.ts / bankstats.ts / wiki.ts
 data/templates/7x7.json   黒マステンプレート（7 種とその転置・反転のうち、実語彙で埋まることを確認した変種のみ）
 supabase/migrations/      001_schema.sql（テーブル・RLS・不変トリガー）/ 002_rpc.sql（RPC・権限）
 ../xword-private/         words/*.json（語彙バンク）・out/（生成結果、解答入り）← 公開しない
@@ -41,7 +43,15 @@ supabase/migrations/      001_schema.sql（テーブル・RLS・不変トリガ�
 ### 作問ルール（生成器が強制するもの）
 
 ニコリ式のハード制約: 黒マスを縦横に連続させない／白マスを分断しない／単語は 2 文字以上／同じ語を 2 回使わない／小さい仮名は大きく、濁点は区別、「ー」は 1 マス／ン・ー で始まる語なし／四隅は白／180° 点対称／黒マス ≤ 12。
-品質: 難語（difficulty 3）は 1 問 ≤ 2 で互いに交差しない／同じ語は 10 日空ける／1 文字が白マスの 25% を超えない／カギに答えの表記・読みを含めない／二重解の恐れは warning（preview.html で目視）。
+品質: 同じ語は 10 日空ける／1 文字が白マスの 25% を超えない／カギに答えの表記・読み・同じ問題の他の答えを含めない／二重解の恐れは warning（preview.html で目視）。
+
+### 難易度（`scripts/gen/level.ts` の `DEFAULT_PROFILE` が唯一の調整点）
+
+難易度のレバーは **カギ ＞ 語 ＞ 盤面**（NYT の編集者は同じ語でもカギを曜日に合わせて書き換える）。曜日差は付けず毎日同じ配分。
+
+- カギは 3 レベル。`clues`（lv1 直接）/ `clues2`（lv2 ひとひねり）/ `clues3`（lv3 ひねり、交差のマスと合わせて解く前提）。1 問の目標配分は lv1 24% / lv2 48% / lv3 28%、difficulty ≥ 2 の語を 3 語。
+- 公平性（生成器が強制）: lv3 カギは **全マスが交差している語だけ**、lv2 は片方向マス 1 つまで、二重解注意が出た語は lv1 のまま、2 文字語は両マス交差でなければ lv1。**実効難易度 3（lv3 カギ or difficulty 3 の語）同士は交差しない**。difficulty 3 の語は 1 問 ≤ 2 で完全交差の位置のみ。難語ほどカギは直球（difficulty 2 → lv2 まで、3 → lv1 のみ）。
+- 配分が満たせない日は warning（カギの網羅率が育つまでは起こり得る）。`npm run bankstats` で lv2 欠・lv3 欠を数える。カギの書き方は `../xword-private/CLUES.md`。
 
 ## セットアップ（初回のみ）
 

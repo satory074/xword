@@ -72,6 +72,13 @@ export function cellSlotMap(slots: Slot[]): Map<number, string[]> {
   return m;
 }
 
+/** 片方向にしか属さないマスの数（0 = 全マスが交差している）。難しいカギはここが 0 の語にだけ付ける */
+export function uncheckedCount(slot: Slot, cellMap: Map<number, string[]>): number {
+  let n = 0;
+  for (const cell of slot.cells) if ((cellMap.get(cell)?.length ?? 0) < 2) n++;
+  return n;
+}
+
 export function transpose(rows: string[]): string[] {
   const out: string[] = [];
   for (let c = 0; c < SIZE; c++) {

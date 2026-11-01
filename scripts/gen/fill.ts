@@ -1,9 +1,11 @@
 // バックトラッキング CSP による盤面埋め。
-//   変数 = スロット、値 = 語 id、制約 = 交差の一致・同語禁止・先頭ン/ー禁止・難語の上限と交差禁止。
+//   変数 = スロット、値 = 語 id、制約 = 交差の一致・同語禁止・先頭ン/ー禁止・難語の上限と交差禁止・難語は完全交差スロットのみ。
 //   変数順 MRV → 次数 → 長さ。値順は forward checking（隣接ドメイン最小が大きい順）→ 古い順 → ハッシュ順。
+//   targetHard に達するまでは、開放度を保つ難語（difficulty ≥ 2）を帯内で先頭に昇格させる（枝刈りはしない）。
 import { candidates, type Bank } from "../../src/lib/bank";
-import { CELLS, cellSlotMap, type Slot } from "../../src/lib/grid";
+import { CELLS, cellSlotMap, uncheckedCount, type Slot } from "../../src/lib/grid";
 import { cyrb53 } from "../../src/lib/rng";
+import { HARD_FC_FLOOR, HARD_TIER } from "./level";
 
 export interface FillOptions {
   seed: number;
@@ -13,6 +15,8 @@ export interface FillOptions {
   recency: ReadonlyMap<string, number>;
   maxNodes?: number;
   maxDiff3?: number;
+  /** difficulty ≥ 2 の語の目標数（ソフト: 候補順のバイアスのみ） */
+  targetHard?: number;
   /** forward checking にかける候補数の上限（コスト抑制） */
   fcLimit?: number;
   /** 診断用: 行き止まり（ドメインが空になったスロット）と代入の通知 */
@@ -23,6 +27,8 @@ export interface FillOptions {
 export interface FillResult {
   answers: Record<string, string>;
   nodes: number;
+  /** difficulty ≥ 2 の語数 */
+  hard: number;
 }
 
 interface Crossing {
@@ -34,12 +40,14 @@ interface Crossing {
 export function fill(slots: Slot[], bank: Bank, opts: FillOptions): FillResult | null {
   const maxNodes = opts.maxNodes ?? 20000;
   const maxDiff3 = opts.maxDiff3 ?? 2;
+  const targetHard = opts.targetHard ?? 0;
   const fcLimit = opts.fcLimit ?? 80;
 
   const cells: (string | null)[] = new Array<string | null>(CELLS).fill(null);
   const cellMap = cellSlotMap(slots);
   const slotById = new Map(slots.map((s) => [s.id, s]));
   const firstCells = new Set(slots.map((s) => s.cells[0]!));
+  const fullyChecked = new Set(slots.filter((s) => uncheckedCount(s, cellMap) === 0).map((s) => s.id));
   const crossings = new Map<string, Crossing[]>();
   for (const s of slots) {
     const list: Crossing[] = [];
@@ -54,8 +62,10 @@ export function fill(slots: Slot[], bank: Bank, opts: FillOptions): FillResult |
   const assigned = new Map<string, number>();
   const used = new Set<string>();
   const diff3Slots = new Set<string>();
+  let hardCount = 0;
   let nodes = 0;
 
+  const isHard = (id: number): boolean => bank.words[id]!.difficulty >= 2;
   const patternOf = (s: Slot): (string | null)[] => s.cells.map((c) => cells[c]!);
 
   const allowed = (s: Slot, id: number): boolean => {
@@ -70,6 +80,8 @@ export function fill(slots: Slot[], bank: Bank, opts: FillOptions): FillResult |
       }
     }
     if (w.difficulty === 3) {
+      // 難語は交差から埋められる位置にだけ置く（NYT: never let two obscure words cross）
+      if (!fullyChecked.has(s.id)) return false;
       if (diff3Slots.size >= maxDiff3) return false;
       for (const x of crossings.get(s.id)!) if (diff3Slots.has(x.other.id)) return false;
     }
@@ -115,10 +127,16 @@ export function fill(slots: Slot[], bank: Bank, opts: FillOptions): FillResult |
   const recencyOf = (kana: string): number => opts.recency.get(kana) ?? Number.POSITIVE_INFINITY;
 
   const order = (s: Slot, dom: number[]): number[] => {
-    const pre = dom
+    const needHard = hardCount < targetHard;
+    const all = dom
       .map((id) => ({ id, rec: recencyOf(bank.words[id]!.kana), h: cyrb53(bank.words[id]!.kana, opts.seed) }))
-      .sort((a, b) => b.rec - a.rec || a.h - b.h)
-      .slice(0, fcLimit);
+      .sort((a, b) => b.rec - a.rec || a.h - b.h);
+    const pre = all.slice(0, fcLimit);
+    if (needHard) {
+      // 難語は少数なので、fcLimit の外でも必ず forward checking に載せる
+      const inPre = new Set(pre.map((c) => c.id));
+      for (const c of all) if (isHard(c.id) && !inPre.has(c.id)) pre.push(c);
+    }
     const scored: { id: number; fc: number; rec: number; h: number }[] = [];
     for (const c of pre) {
       const touched = place(s, c.id);
@@ -133,7 +151,16 @@ export function fill(slots: Slot[], bank: Bank, opts: FillOptions): FillResult |
       if (fc === 0) continue;
       scored.push({ id: c.id, fc, rec: c.rec, h: c.h });
     }
-    scored.sort((a, b) => b.fc - a.fc || b.rec - a.rec || a.h - b.h);
+    if (needHard && scored.length) {
+      // 開放度が最大値の HARD_TIER 倍以上を保つ難語だけ先頭へ。FC 順の骨格は壊さない
+      let top = 0;
+      for (const x of scored) if (x.fc > top) top = x.fc;
+      const tier = Math.max(HARD_FC_FLOOR, Math.ceil(top * HARD_TIER));
+      const promo = (x: { id: number; fc: number }): number => (isHard(x.id) && x.fc >= tier ? 1 : 0);
+      scored.sort((a, b) => promo(b) - promo(a) || b.fc - a.fc || b.rec - a.rec || a.h - b.h);
+    } else {
+      scored.sort((a, b) => b.fc - a.fc || b.rec - a.rec || a.h - b.h);
+    }
     return scored.map((x) => x.id);
   };
 
@@ -157,7 +184,9 @@ export function fill(slots: Slot[], bank: Bank, opts: FillOptions): FillResult |
       assigned.set(slot.id, id);
       used.add(w.kana);
       if (w.difficulty === 3) diff3Slots.add(slot.id);
+      if (w.difficulty >= 2) hardCount++;
       if (recurse()) return true;
+      if (w.difficulty >= 2) hardCount--;
       if (w.difficulty === 3) diff3Slots.delete(slot.id);
       used.delete(w.kana);
       assigned.delete(slot.id);
@@ -169,5 +198,5 @@ export function fill(slots: Slot[], bank: Bank, opts: FillOptions): FillResult |
   if (!recurse()) return null;
   const answers: Record<string, string> = {};
   for (const [sid, id] of assigned) answers[sid] = bank.words[id]!.kana;
-  return { answers, nodes };
+  return { answers, nodes, hard: hardCount };
 }
