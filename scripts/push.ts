@@ -3,6 +3,7 @@
 //   npm run push -- --date 2026-11-10 # 1 日分
 //   npm run push -- --dry             # 実行せず一覧だけ
 //   npm run push -- --force           # JST 今日以前も対象（solves がある日は拒否）
+//   npm run push -- --sql > out.sql   # DB に接続せず upsert SQL を出力（SQL Editor や MCP で流す用）
 // .env の SUPABASE_SERVICE_ROLE_KEY を使う（RLS をバイパスする鍵。公開しない）
 import { createClient } from "@supabase/supabase-js";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -18,8 +19,31 @@ const { values } = parseArgs({
     out: { type: "string", default: DEFAULT_OUT_DIR },
     dry: { type: "boolean", default: false },
     force: { type: "boolean", default: false },
+    sql: { type: "boolean", default: false },
   },
 });
+
+const todayKey = jstDateKey(Date.now());
+const targetFiles = readdirSync(values.out)
+  .filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f))
+  .filter((f) => !values.date || f === `${values.date}.json`)
+  .sort();
+
+if (values.sql) {
+  // 接続せずに SQL を出力。公開済み日付の解答差し替えは DB トリガーが拒否する
+  const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
+  const lines: string[] = [];
+  for (const f of targetFiles) {
+    const p = JSON.parse(readFileSync(join(values.out, f), "utf8")) as GeneratedPuzzle;
+    if (p.date <= todayKey && !values.force) continue;
+    lines.push(
+      `insert into puzzles (puzzle_date, spec, solution, answers, version) values (${lit(p.date)}, ${lit(JSON.stringify(p.spec))}::jsonb, ${lit(p.solution)}, ${lit(JSON.stringify(p.answers))}::jsonb, 1)` +
+        ` on conflict (puzzle_date) do update set spec = excluded.spec, solution = excluded.solution, answers = excluded.answers, version = case when puzzles.solution = excluded.solution then puzzles.version else puzzles.version + 1 end;`,
+    );
+  }
+  process.stdout.write(lines.join("\n") + "\n");
+  process.exit(0);
+}
 
 if (existsSync(".env")) process.loadEnvFile(".env");
 const url = process.env.PUBLIC_SUPABASE_URL;
@@ -27,11 +51,8 @@ const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!url || !key) throw new Error("PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY を .env に設定してください");
 const sb = createClient(url, key, { auth: { persistSession: false } });
 
-const today = jstDateKey(Date.now());
-const files = readdirSync(values.out)
-  .filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f))
-  .filter((f) => !values.date || f === `${values.date}.json`)
-  .sort();
+const today = todayKey;
+const files = targetFiles;
 if (files.length === 0) throw new Error("対象ファイルがありません");
 
 let pushed = 0;
