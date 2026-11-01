@@ -61,6 +61,7 @@ export function lintFill(slots: Slot[], bank: Bank, answers: Record<string, stri
 
 /**
  * カギ選択: 前回使った番号の次（履歴なしはハッシュで決める）。
+ * 同じ問題内の他の答え（カナ・読み・表記）をカギに含むものは避け、避けられなければエラー。
  * 戻り値は slotId → カギ本文と、slotId → 使った番号（履歴用）。
  */
 export function chooseClues(
@@ -73,17 +74,41 @@ export function chooseClues(
   const clues: Record<string, string> = {};
   const clueIndex: Record<string, number> = {};
   const errors: string[] = [];
+  // この問題の全答え（表記も含む）。カギにこれらが入っていてはいけない
+  const others = slots.map((s) => {
+    const kana = answers[s.id]!;
+    return { id: s.id, kana, surfaces: bank.words[bank.byKana.get(kana)!]!.surfaces };
+  });
+  const leaksAny = (clue: string, selfId: string): string | null => {
+    for (const o of others) {
+      const leak = clueLeaks(clue, o.kana, o.surfaces);
+      if (leak) return o.id === selfId ? leak : `${leak}（同じ問題の ${o.id} の答え）`;
+    }
+    return null;
+  };
   for (const s of slots) {
     const kana = answers[s.id]!;
     const w = bank.words[bank.byKana.get(kana)!]!;
     const n = w.clues.length;
     const last = lastClue.get(kana);
-    const idx = last === undefined ? cyrb53(kana, seed) % n : (last + 1) % n;
-    const clue = w.clues[idx]!;
-    const leak = clueLeaks(clue, kana, w.surfaces);
-    if (leak) errors.push(`${s.id} ${leak}`);
-    clues[s.id] = clue;
-    clueIndex[s.id] = idx;
+    const start = last === undefined ? cyrb53(kana, seed) % n : (last + 1) % n;
+    let chosen = -1;
+    let firstLeak: string | null = null;
+    for (let k = 0; k < n; k++) {
+      const idx = (start + k) % n;
+      const leak = leaksAny(w.clues[idx]!, s.id);
+      if (!leak) {
+        chosen = idx;
+        break;
+      }
+      firstLeak ??= leak;
+    }
+    if (chosen < 0) {
+      errors.push(`${s.id} ${kana}: 使えるカギがない — ${firstLeak}`);
+      continue;
+    }
+    clues[s.id] = w.clues[chosen]!;
+    clueIndex[s.id] = chosen;
   }
   return { clues, clueIndex, errors };
 }
