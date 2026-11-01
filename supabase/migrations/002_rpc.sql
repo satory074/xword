@@ -10,6 +10,7 @@
 create or replace function check_limit()
 returns int
 language sql immutable
+set search_path = public
 as $$ select 30 $$;
 
 -- ---- 正規化: 小書き仮名→大きい仮名、長音の揺れ→ー、形式検査 ----
