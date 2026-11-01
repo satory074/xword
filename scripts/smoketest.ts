@@ -112,9 +112,14 @@ const synth = syntheticBank();
   let okCount = 0;
   for (const t of templates) {
     const slots = deriveSlots(t.rows);
-    const opts = { seed: 7, exclude: new Set<string>(), recency: new Map<string, number>() };
-    const a = fill(slots, bankForFill, opts);
-    if (real) assert(a !== null, `${t.id} の埋めが実語彙で成功`);
+    // generatePuzzle と同じく 3 シードまで試す（語彙が増えると 1 シードでは探索が発散することがある）
+    let opts = { seed: 7, exclude: new Set<string>(), recency: new Map<string, number>() };
+    let a = fill(slots, bankForFill, opts);
+    for (let k = 1; k < 3 && !a; k++) {
+      opts = { ...opts, seed: (7 + k * 7919) >>> 0 };
+      a = fill(slots, bankForFill, opts);
+    }
+    if (real) assert(a !== null, `${t.id} の埋めが実語彙で成功（3 シード以内）`);
     if (!a) continue;
     okCount++;
     const b = fill(slots, bankForFill, opts);

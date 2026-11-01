@@ -56,7 +56,7 @@ export function generatePuzzle(
     const slots = deriveSlots(t.rows);
     for (let k = 0; k < SEEDS_PER_TEMPLATE; k++) {
       const s = (seed + k * 7919) >>> 0;
-      const res = fill(slots, bank, { seed: s, exclude, recency, maxNodes: opts.maxNodes, maxDiff3: profile.maxDiff3, targetHard: profile.targetHard });
+      const res = fill(slots, bank, { seed: s, exclude, recency, maxNodes: opts.maxNodes, maxDiff3: profile.maxDiff3, targetHard: profile.targetHard, maxHard: profile.maxHard });
       if (!res) {
         attempts.push(`${t.id}/${k}: 埋め失敗`);
         continue;

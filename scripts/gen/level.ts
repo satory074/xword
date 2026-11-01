@@ -11,6 +11,8 @@ export interface Profile {
   targetHard: number;
   /** 難語がこれより少なければ warning */
   minHard: number;
+  /** difficulty ≥ 2 の語の上限（ハード制約）。難語ばかりになると lv3 カギを置ける語が無くなるため */
+  maxHard: number;
   /** difficulty 3 の語の上限（互いに交差しない・完全交差のスロットのみ） */
   maxDiff3: number;
   /** 語の difficulty → カギの最大レベル。難語ほど直球のカギ（実効難易度 = max(語, カギ) を 3 で止める） */
@@ -28,6 +30,7 @@ export const DEFAULT_PROFILE: Profile = {
   minLv3: 4,
   targetHard: 3,
   minHard: 2,
+  maxHard: 5,
   maxDiff3: 2,
   clueCap: { 1: 3, 2: 2, 3: 1 },
   lv2MaxUnchecked: 1,
@@ -52,6 +55,7 @@ export function parseProfileArgs(v: { mix?: string; hard?: string }, base: Profi
     if (!Number.isInteger(n) || n < 0) throw new Error(`--hard が不正: ${v.hard}`);
     p.targetHard = n;
     p.minHard = Math.min(p.minHard, n);
+    p.maxHard = Math.max(p.maxHard, n);
   }
   return p;
 }

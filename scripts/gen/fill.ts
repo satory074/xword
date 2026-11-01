@@ -17,6 +17,8 @@ export interface FillOptions {
   maxDiff3?: number;
   /** difficulty ≥ 2 の語の目標数（ソフト: 候補順のバイアスのみ） */
   targetHard?: number;
+  /** difficulty ≥ 2 の語の上限（ハード制約） */
+  maxHard?: number;
   /** forward checking にかける候補数の上限（コスト抑制） */
   fcLimit?: number;
   /** 診断用: 行き止まり（ドメインが空になったスロット）と代入の通知 */
@@ -41,6 +43,7 @@ export function fill(slots: Slot[], bank: Bank, opts: FillOptions): FillResult |
   const maxNodes = opts.maxNodes ?? 20000;
   const maxDiff3 = opts.maxDiff3 ?? 2;
   const targetHard = opts.targetHard ?? 0;
+  const maxHard = opts.maxHard ?? Number.POSITIVE_INFINITY;
   const fcLimit = opts.fcLimit ?? 80;
 
   const cells: (string | null)[] = new Array<string | null>(CELLS).fill(null);
@@ -79,6 +82,7 @@ export function fill(slots: Slot[], bank: Bank, opts: FillOptions): FillResult |
         if (ch === "ン" || ch === "ー") return false;
       }
     }
+    if (w.difficulty >= 2 && hardCount >= maxHard) return false;
     if (w.difficulty === 3) {
       // 難語は交差から埋められる位置にだけ置く（NYT: never let two obscure words cross）
       if (!fullyChecked.has(s.id)) return false;
