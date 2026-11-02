@@ -1,7 +1,8 @@
 // 問題生成 CLI。
-//   npm run gen -- --date 2026-11-10 --days 30 [--dry] [--force] [--mix 24/48/28] [--hard 3] [--bank DIR] [--out DIR]
+//   npm run gen -- --date 2026-11-10 --days 30 [--dry] [--force] [--mix 24/48/28] [--new 2] [--review 2] [--bank DIR] [--out DIR]
 // 出力: <out>/<date>.json（解答入り。公開リポに入れない）と <out>/preview.html
-// --force で作り直すとき、開始日以降の旧ファイルは履歴に数えない（数えると直近の語がクールダウンで使えなくなる）
+// --force で作り直すとき、開始日以降の旧ファイルは履歴に数えない（数えると直近の語がクールダウンで使えなくなる）。
+// 履歴は難語の間隔反復（新出 → 3〜7 日後に復習 → 14〜30 日後）の元でもある
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -21,7 +22,8 @@ const { values } = parseArgs({
     out: { type: "string", default: DEFAULT_OUT_DIR },
     force: { type: "boolean", default: false },
     mix: { type: "string" },
-    hard: { type: "string" },
+    new: { type: "string" },
+    review: { type: "string" },
   },
 });
 
@@ -55,7 +57,7 @@ for (let i = 0; i < days; i++) {
   addToHistory(history, { date, answers: p.answers, clueIndex: p.clueIndex });
   generated.push(p);
   const words = Object.values(p.answers).join(" ");
-  const mix = `lv ${p.mix[1]}/${p.mix[2]}/${p.mix[3]} 難語 ${p.hard.length}`;
+  const mix = `lv ${p.mix[1]}/${p.mix[2]}/${p.mix[3]} 新 ${p.learn.new.length} 復 ${p.learn.review.length}`;
   console.log(`${date}: ${p.template} nodes=${p.nodes} ${mix}${p.warnings.length ? ` warn=${p.warnings.length}` : ""}  ${words}`);
   if (!values.dry) writeFileSync(path, JSON.stringify({ ...p, generatedAt: new Date().toISOString() }, null, 2) + "\n");
 }

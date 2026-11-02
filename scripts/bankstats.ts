@@ -1,10 +1,14 @@
-// 語彙バンクの統計: 長さ・難易度・カテゴリ別の語数、カギのレベル網羅率、薄い (長さ, 位置, 文字) バケツ。
+// 語彙バンクの統計: 長さ・難易度・カテゴリ別の語数、カギのレベル網羅率、薄い (長さ, 位置, 文字) バケツ、
+//   難語の在庫（まだ出していない難語 = 新出に使える語）と crosswordese（直近 90 日に 4 回以上出た語）。
 //   網羅率の目標: lv2 欠 = 0、lv3 欠（difficulty 1 かつ 3 文字以上）= 0。difficulty ≥ 2 の語には clues3 を書かない（カギは直球に留める）
 import { parseArgs } from "node:util";
+import { addDays } from "../src/lib/date";
 import { GRID_KANA, kanaLength } from "../src/lib/kana";
-import { DEFAULT_BANK_DIR, readBank, readBankEntries } from "./gen/bankio";
+import { DEFAULT_BANK_DIR, DEFAULT_OUT_DIR, readBank, readBankEntries } from "./gen/bankio";
+import { readHistoryDir } from "./gen/history";
+import { DEFAULT_PROFILE } from "./gen/level";
 
-const { values } = parseArgs({ options: { bank: { type: "string", default: DEFAULT_BANK_DIR } } });
+const { values } = parseArgs({ options: { bank: { type: "string", default: DEFAULT_BANK_DIR }, out: { type: "string", default: DEFAULT_OUT_DIR } } });
 const { bank, errors, entryCount } = readBank(values.bank);
 if (errors.length) console.log(`⚠ lint ${errors.length} 件:\n  ${errors.join("\n  ")}`);
 console.log(`エントリ ${entryCount} → 語 ${bank.words.length}`);
@@ -49,6 +53,29 @@ const diffByKana = new Map<string, Set<number>>();
 for (const e of entries) diffByKana.set(e.kana, (diffByKana.get(e.kana) ?? new Set()).add(e.difficulty));
 const mixed = [...diffByKana.entries()].filter(([, s]) => s.size > 1).map(([k, s]) => `${k}(${[...s].sort().join("/")})`);
 if (mixed.length) console.log(`同音統合で difficulty が異なる語: ${mixed.join(" ")}`);
+
+// 難語の在庫: out/ の履歴に一度も出ていない難語（新出語として出せる語）。1 日 targetNew 語で何日分か
+const history = readHistoryDir(values.out);
+const hardWords = bank.words.filter((w) => w.difficulty >= 2);
+const unseen = hardWords.filter((w) => !history.uses.has(w.kana));
+const perDay = DEFAULT_PROFILE.targetNew;
+console.log(`難語在庫: ${unseen.length}/${hardWords.length} 語が未出題（1 日 ${perDay} 語なら約 ${perDay ? Math.floor(unseen.length / perDay) : "-"} 日分。bank に難語を足すと増える）`);
+
+// crosswordese: 履歴の最終日から 90 日の窓で 4 回以上出た語（文字パターンの都合で繰り返し出る穴埋め語）
+{
+  const WINDOW = 90;
+  const MIN_USES = 4;
+  let latest = "";
+  for (const u of history.uses.values()) for (const d of u) if (d > latest) latest = d;
+  if (latest) {
+    const from = addDays(latest, -(WINDOW - 1));
+    const frequent = [...history.uses.entries()]
+      .map(([kana, u]) => [kana, u.filter((d) => d >= from).length] as const)
+      .filter(([, n]) => n >= MIN_USES)
+      .sort((a, b) => b[1] - a[1]);
+    console.log(`頻出語（${from}〜${latest} に ${MIN_USES} 回以上）: ${frequent.length ? frequent.map(([k, n]) => `${k}×${n}`).join(" ") : "なし"}`);
+  }
+}
 
 // 文字別の出現（薄い文字を知る）
 const charCount = new Map<string, number>();

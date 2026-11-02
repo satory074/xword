@@ -1,6 +1,8 @@
 // 埋め結果の品質 lint とカギ選択（レベル配分）。
 //   公平性: 難しいカギ（lv3）は完全交差のスロットだけ、lv2 は片方向マス ≤ lv2MaxUnchecked、
 //   二重解の恐れがあるスロットは直球（lv1）のまま。実効難易度 3（lv3 カギ or difficulty 3 の語）同士は交差させない。
+//   語彙が増える出題: 新出語（履歴に無い難語）は完全交差スロットのみ・新出同士は交差しない・カギは lv1 のみ。
+//   復習語は lv2 を優先（前回と別の角度で再会させる）。
 import { candidates, clueLeaks, type Bank, type BankWord, type Level } from "../../src/lib/bank";
 import { BLACK, cellSlotMap, uncheckedCount, type Slot } from "../../src/lib/grid";
 import { cyrb53 } from "../../src/lib/rng";
@@ -19,8 +21,18 @@ export interface LintReport {
 const wordOf = (bank: Bank, kana: string): BankWord => bank.words[bank.byKana.get(kana)!]!;
 const crosses = (a: Slot, b: Slot): boolean => a.cells.some((c) => b.cells.includes(c));
 
-/** 二重解・文字偏り・難語制約 */
-export function lintFill(slots: Slot[], bank: Bank, answers: Record<string, string>, solution: string, maxDiff3 = MAX_DIFF3): LintReport {
+export interface LintFillOptions {
+  maxDiff3?: number;
+  /** 新出語のスロット id（完全交差のみ・互いに非交差・上限 maxNew を再検査） */
+  fresh?: ReadonlySet<string>;
+  maxNew?: number;
+}
+
+/** 二重解・文字偏り・難語制約・新出語の位置 */
+export function lintFill(slots: Slot[], bank: Bank, answers: Record<string, string>, solution: string, opts: LintFillOptions = {}): LintReport {
+  const maxDiff3 = opts.maxDiff3 ?? MAX_DIFF3;
+  const fresh = opts.fresh ?? new Set<string>();
+  const maxNew = opts.maxNew ?? Number.POSITIVE_INFINITY;
   const errors: string[] = [];
   const warnings: string[] = [];
   const ambiguous = new Set<string>();
@@ -69,8 +81,26 @@ export function lintFill(slots: Slot[], bank: Bank, answers: Record<string, stri
       if (a.id < b.id && crosses(a, b)) errors.push(`難語同士が交差: ${a.id} × ${b.id}`);
     }
   }
+
+  // 新出語（初めて出す難語）: 知らなくても交差から埋められる位置だけ、新出同士は交差しない（最後の砦）
+  const newSlots = slots.filter((s) => fresh.has(s.id));
+  if (newSlots.length > maxNew) errors.push(`新出語が ${newSlots.length} 語（上限 ${maxNew}）`);
+  for (const a of newSlots) {
+    if (wordOf(bank, answers[a.id]!).difficulty < 2) errors.push(`新出語なのに difficulty 1: ${a.id} ${answers[a.id]}`);
+    if (uncheckedCount(a, cellMap) > 0) errors.push(`新出語が片方向マスのスロットにある: ${a.id} ${answers[a.id]}`);
+    for (const b of newSlots) {
+      if (a.id < b.id && crosses(a, b)) errors.push(`新出語同士が交差: ${a.id} × ${b.id}`);
+    }
+  }
   return { errors, warnings, ambiguous };
 }
+
+/** 新出・復習のスロット id（chooseClues / lintLevels に渡す） */
+export interface LearnSlots {
+  fresh: ReadonlySet<string>;
+  review: ReadonlySet<string>;
+}
+const NO_LEARN: LearnSlots = { fresh: new Set(), review: new Set() };
 
 export interface ClueChoice {
   clues: Record<string, string>;
@@ -136,8 +166,8 @@ function pickIndependent(cands: SlotInfo[], seed: number): SlotInfo[] {
 
 /**
  * カギ選択。手順:
- *   1. スロットごとに使えるカギ（他の答えを漏らさない）とレベル上限（片方向マス・2 文字・二重解・語の difficulty）
- *   2. lv3 を完全交差かつ互いに非交差のスロットへ（最大独立集合）、次に lv2、残りは lv1
+ *   1. スロットごとに使えるカギ（他の答えを漏らさない）とレベル上限（片方向マス・2 文字・二重解・語の difficulty・新出は lv1）
+ *   2. lv3 を完全交差かつ互いに非交差のスロットへ（最大独立集合）、次に lv2（復習語を先頭に）、残りは lv1
  *   3. 割り当てたレベルにカギが無ければ 1 段ずつ下げる。同レベル内は前回使った番号の次（履歴なしはハッシュ）
  */
 export function chooseClues(
@@ -148,6 +178,7 @@ export function chooseClues(
   seed: number,
   profile: Profile = DEFAULT_PROFILE,
   ambiguous: ReadonlySet<string> = new Set(),
+  learn: LearnSlots = NO_LEARN,
 ): ClueChoice {
   const clues: Record<string, string> = {};
   const clueIndex: Record<string, number> = {};
@@ -178,7 +209,8 @@ export function chooseClues(
       if (!leaksAny(c.text, s.id)) usable[c.level].push(idx);
     });
     const unchecked = uncheckedCount(s, cellMap);
-    return { s, kana, w, unchecked, usable, cap: maxClueLevel(s.len, unchecked, w.difficulty, ambiguous.has(s.id), profile), hash: cyrb53(s.id + kana, seed) };
+    const cap = maxClueLevel(s.len, unchecked, w.difficulty, ambiguous.has(s.id), profile, learn.fresh.has(s.id));
+    return { s, kana, w, unchecked, usable, cap, hash: cyrb53(s.id + kana, seed) };
   });
 
   const n = slots.length;
@@ -193,10 +225,12 @@ export function chooseClues(
   if (chosen3.length > want3) chosen3 = [...chosen3].sort((a, b) => b.s.len - a.s.len || a.hash - b.hash).slice(0, want3);
   for (const x of chosen3) target.set(x.s.id, 3);
 
-  // lv2: 残りから片方向マスが少なく長いものを優先
+  // lv2: 残りから復習語を先頭に（前回の直接カギと別の角度で再会させる。難語の lv1 は 1 本しかないことが多い）、
+  //      次に片方向マスが少なく長いものを優先
+  const rev = (x: SlotInfo): number => (learn.review.has(x.s.id) ? 1 : 0);
   const elig2 = info
     .filter((x) => !target.has(x.s.id) && x.cap >= 2 && x.usable[2].length > 0)
-    .sort((a, b) => a.unchecked - b.unchecked || b.s.len - a.s.len || a.hash - b.hash)
+    .sort((a, b) => rev(b) - rev(a) || a.unchecked - b.unchecked || b.s.len - a.s.len || a.hash - b.hash)
     .slice(0, want2);
   for (const x of elig2) target.set(x.s.id, 2);
 
@@ -231,6 +265,7 @@ export function lintLevels(
   levels: Record<string, Level>,
   clueIndex: Record<string, number>,
   profile: Profile = DEFAULT_PROFILE,
+  learn: LearnSlots = NO_LEARN,
 ): string[] {
   const errors: string[] = [];
   const cellMap = cellSlotMap(slots);
@@ -239,6 +274,7 @@ export function lintLevels(
     const w = wordOf(bank, answers[s.id]!);
     const lv = levels[s.id] ?? 1;
     const unchecked = uncheckedCount(s, cellMap);
+    if (learn.fresh.has(s.id) && lv > 1) errors.push(`新出語に lv${lv} のカギ: ${s.id} ${answers[s.id]}`);
     if (lv === 3 && unchecked > 0) errors.push(`lv3 カギが片方向マスのスロットに: ${s.id} ${answers[s.id]}`);
     if (lv === 2 && (s.len === 2 ? unchecked > 0 : unchecked > profile.lv2MaxUnchecked)) errors.push(`lv2 カギの片方向マスが多い: ${s.id} ${answers[s.id]}（${unchecked}）`);
     const clue = w.clues[clueIndex[s.id] ?? -1];

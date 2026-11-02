@@ -60,8 +60,8 @@ export function realApi(): Api {
       };
     },
 
-    async revealSlot(date, slotId): Promise<string> {
-      const { data, error } = await sb.rpc("reveal_slot", { p_date: date, p_slot_id: slotId });
+    async revealCell(date, cell): Promise<string> {
+      const { data, error } = await sb.rpc("reveal_cell", { p_date: date, p_cell: cell });
       if (error) fail(error);
       return String(data);
     },

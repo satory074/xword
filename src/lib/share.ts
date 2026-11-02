@@ -14,7 +14,7 @@ export function shareText(s: ShareInput): string {
   const lines = [`xword ${s.date} ✅ ${fmtDuration(s.durationSec)}`];
   const extras: string[] = [];
   if (s.checks > 1) extras.push(`答え合わせ ${s.checks} 回`);
-  if (s.reveals > 0) extras.push(`ヒント ${s.reveals} 語`);
+  if (s.reveals > 0) extras.push(`ヒント ${s.reveals} 文字`);
   if (s.streak > 1) extras.push(`🔥 ${s.streak} 日連続`);
   if (extras.length) lines.push(extras.join(" / "));
   lines.push(s.url);

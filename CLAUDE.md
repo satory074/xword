@@ -9,13 +9,13 @@ Astro 5, Tailwind v4, TypeScript, GitHub Pages 静的サイト ＋ Supabase（Au
 ```bash
 npm run dev / build / typecheck
 npm run test        # smoketest（テンプレート・カナ正規化と SQL の一致・語彙バンク lint・埋め・採点・連続日数）+ domtest（jsdom、フェイク Api）
-npm run gen -- --date YYYY-MM-DD --days N [--force] [--mix 24/48/28] [--hard 3]   # 問題生成 → ../xword-private/out/
+npm run gen -- --date YYYY-MM-DD --days N [--force] [--mix 24/48/28] [--new 2] [--review 2]   # 問題生成 → ../xword-private/out/
 npm run push        # Supabase へ登録（.env の SUPABASE_SERVICE_ROLE_KEY）
-npm run stress / bankstats                  # bankstats はカギのレベル網羅率（lv2 欠・lv3 欠）も出す
+npm run stress / bankstats                  # stress は新出/復習の実績と 3〜7 日復習の命中率、bankstats はカギの網羅率・難語在庫・頻出語も出す
 npm run wiki -- --file animals              # ja.wikipedia の要約・閲覧数を ../xword-private/wiki/ にキャッシュ（カギ執筆の裏取り）
 ```
 
-**アーキテクチャ**: **解答はサーバー側にしかない**。`puzzles` に select ポリシーを作らず、`get_puzzle` RPC が JST 今日以前の spec だけ返す。答え合わせは `check_grid` RPC で採点、ヒントは `reveal_slot`。未ログインは localStorage、ログイン時に `sync_results` がサーバーで再採点して取り込む。`src/lib/`（純 TS、相対 import、DOM/supabase 禁止）→ `src/app/`（DOM 層。`real.ts` が実依存を注入、domtest はフェイク注入）→ `src/pages/` 殻。詳細は README。
+**アーキテクチャ**: **解答はサーバー側にしかない**。`puzzles` に select ポリシーを作らず、`get_puzzle` RPC が JST 今日以前の spec だけ返す。答え合わせは `check_grid` RPC で採点、ヒントは `reveal_cell`（カーソルのマス 1 文字だけ。語を丸ごと見せると想起が消える）。未ログインは localStorage、ログイン時に `sync_results` がサーバーで再採点して取り込む。`src/lib/`（純 TS、相対 import、DOM/supabase 禁止）→ `src/app/`（DOM 層。`real.ts` が実依存を注入、domtest はフェイク注入）→ `src/pages/` 殻。詳細は README。
 
 **語彙バンクと生成結果は `../xword-private/`（非公開リポ）**。公開リポに置くとカギ→答えが grep できる。`out/*.json` は解答入りで、削除しない（語のクールダウン履歴）。
 
@@ -28,7 +28,9 @@ npm run wiki -- --file animals              # ja.wikipedia の要約・閲覧数
 - カギの読み漏れ検査（ひらがな）は 3 文字以上だけ。2 文字は「めでたい」の「たい」のような偽陽性が多い
 - 語彙バンクの `kana` は正規化済みで書く（ッ→ツ、ャ→ヤ、ヴ・ヲ不可、2〜5 文字、ン・ー 先頭禁止）。lint が `npm test` と `bankstats` で走る
 - **カギは 3 配列** `clues`（lv1 直接）/ `clues2`（ひとひねり）/ `clues3`（ひねり）。書き方と例は `../xword-private/CLUES.md`。difficulty ≥ 2 の語に `clues3` は書かない（生成器が使わない）。2 文字語の `clues3` は lint エラー。未知のキー（`clue2` 等の typo）は読み込みで例外
-- **難易度の調整は `scripts/gen/level.ts` の `DEFAULT_PROFILE` だけ**。公平性ルール（lv3 は完全交差の語のみ・実効難易度 3 同士は交差しない・二重解注意の語は lv1）は `lintLevels` が最後の砦。配分未達は warning で埋めは捨てない
-- `gen --force` で作り直すとき、開始日以降の旧 `out/*.json` は履歴に数えない（数えると直近の語が全部クールダウンに入る）。`cooldown()` も未来日は除外しない。`ALGO_VERSION` を上げると同じ日付でも別の問題になる（現在 2）
+- **難易度の調整は `scripts/gen/level.ts` の `DEFAULT_PROFILE` だけ**。公平性ルール（lv3 は完全交差の語のみ・実効難易度 3 同士は交差しない・二重解注意の語は lv1・**新出語は完全交差のみ・新出同士は交差しない・新出は lv1**）は `lintFill` / `lintLevels` が最後の砦。配分未達は warning で埋めは捨てない（新出 0 の候補だけは保留して他を少し試す）
+- **語彙が増える出題（algo 3）**: difficulty ≥ 2 の語は「新出」（履歴に無い語）と「復習」（過去に出た語）に分かれ、判定は `history.ts` の `schedule()` が単一の情報源（`recency` 未登録 = 新出、`review` に載る = 復習）。クールダウンは difficulty 別: d1 は 10 日、難語は `HARD_SCHEDULE`（1 回目 3〜7 日後がウィンドウ、2 回目 14〜30 日、3 回目以降 45 日空ける）。`out/*.json` の `learn` に新出/復習のスロット id。研究上の根拠は README「語彙が増える出題」
+- `gen --force` で作り直すとき、開始日以降の旧 `out/*.json` は履歴に数えない（数えると直近の語が全部クールダウンに入る）。`schedule()` も未来日は数えない。`ALGO_VERSION` を上げると同じ日付でも別の問題になる（現在 3）
+- **ヒントは 1 マス 1 文字**（`reveal_cell`）。`solves.reveals` は 003 以降「文字数」（002 までの行は語数）。旧 `reveal_slot` はキャッシュされた旧クライアント用に残し、`004_drop_reveal_slot.sql` で削除する
 - Supabase 無料枠は 1 週間無アクセスで停止 → `.github/workflows/keepalive.yml` が毎日 RPC を叩く
 - OAuth の redirectTo は base path `/xword/` 込み（`app/auth.ts`）。Supabase の Redirect URLs に localhost と本番の両方を登録

@@ -71,9 +71,9 @@ function makeWorld(): World {
       const sc = scoreCells(gen.solution, cells);
       return { ...sc, checks: null };
     },
-    async revealSlot(_date, slotId) {
+    async revealCell(_date, cell) {
       calls.reveal++;
-      return gen.answers[slotId]!;
+      return gen.solution[cell]!;
     },
     async syncResults(items) {
       calls.sync.push(items);
@@ -153,6 +153,22 @@ function typeIntoSlot(dom: ReturnType<typeof setupDom>, slotId: string, text: st
   const input = dom.hidden();
   input.value = text;
   input.dispatchEvent(new (globalThis as unknown as { Event: typeof Event }).Event("input", { bubbles: true }));
+}
+
+// ---- ⓪ ヒントはカーソルのマス 1 文字だけ開く（語を丸ごと見せない）----
+{
+  const world = makeWorld();
+  const deps: AppDeps = { api: world.api, auth: makeAuth(null), storage: memoryKV(), now: () => NOW };
+  const dom = await bootPuzzle(deps);
+  const cursor = slots[0]!.cells[0]!; // 初期カーソル
+  dom.root.querySelector<HTMLElement>('[data-action="reveal"]')!.click();
+  await tick();
+  const revealed = dom.root.querySelectorAll<HTMLElement>(".xw-cell.is-revealed");
+  assert(world.calls.reveal === 1 && revealed.length === 1, `ヒント 1 回で開くマスは 1 つ（${revealed.length}）`);
+  assert(revealed[0]!.dataset.cell === String(cursor) && revealed[0]!.textContent!.includes(gen.solution[cursor]!), "開いたのはカーソルのマスで、文字は正解");
+  dom.root.querySelector<HTMLElement>('[data-action="reveal"]')!.click();
+  await tick();
+  assert(world.calls.reveal === 1, "同じマスを二度は開かない（サーバーを呼ばない）");
 }
 
 // ---- ① 未ログインで解く → 端末に結果が残る ----

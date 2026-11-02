@@ -1,7 +1,8 @@
 // 純ロジックの不変条件テスト。実行: npx tsx scripts/smoketest.ts
 // 件数ではなく「壊れたら困る不変条件」を 1 つずつ検証する:
 //   1) 同梱テンプレートが合法  2) カナ正規化が不動点で SQL と変換表が一致  3) 語彙バンク（あれば）が健全
-//   4) 埋めが正しく決定的  5) 採点が正しい  6) 記録の優劣順序  7) 連続日数  8) 生成結果に答えが漏れず、難しいカギが公平な位置にある
+//   4) 埋めが正しく決定的  5) 採点が正しい  6) 記録の優劣順序  7) 連続日数
+//   8) 生成結果に答えが漏れず、難しいカギ・新出語が公平な位置にあり、難語の間隔反復（blackout / ウィンドウ）が守られる
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { candidates, lintEntry, loadBank, type WordEntry } from "../src/lib/bank";
@@ -14,7 +15,8 @@ import { betterSolve } from "../src/lib/storage";
 import { DEFAULT_BANK_DIR, readBank, readTemplates } from "./gen/bankio";
 import { fill } from "./gen/fill";
 import { generatePuzzle } from "./gen/generate";
-import { addToHistory, emptyHistory } from "./gen/history";
+import { addToHistory, emptyHistory, HARD_SCHEDULE, schedule } from "./gen/history";
+import { DEFAULT_PROFILE } from "./gen/level";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) {
@@ -87,11 +89,13 @@ function syntheticBank() {
       seen.add(k);
       count++;
       const i = entries.length;
+      // difficulty 1: 70% / 2: 20% / 3: 10%（d2 が無いと「新出は lv1」が clueCap[3]=1 と区別できない）
+      const r = rng.int(1, 10);
       entries.push({
         kana: k,
         surface: k,
         category: "fixture",
-        difficulty: rng.int(1, 10) > 9 ? 3 : 1,
+        difficulty: r > 9 ? 3 : r > 7 ? 2 : 1,
         clues: [`fixture ${i}`],
         clues2: [`f2 ${i}`],
         ...(len >= 3 ? { clues3: [`f3 ${i}`] } : {}),
@@ -202,7 +206,8 @@ const synth = syntheticBank();
   console.log("[date/stats] OK");
 }
 
-// ---- 8) 生成結果: spec に答えが含まれない、連続日で語が重ならない（クールダウン）----
+// ---- 8) 生成結果: spec に答えが含まれない、連続日で語が重ならない（クールダウン）、
+//         新出語は完全交差・互いに非交差・lv1、難語は blackout 中に戻らない、新出 / 復習の判定が履歴と一致 ----
 {
   const h = emptyHistory();
   const d1 = "2027-03-01";
@@ -223,7 +228,61 @@ const synth = syntheticBank();
   assert(p1.mix[1] + p1.mix[2] + p1.mix[3] === slots1.length && p1.mix[3] > 0, `mix がスロット数に一致し lv3 がある (${JSON.stringify(p1.mix)})`);
   assert(lv3.every((s) => s.cells.every((c) => cm.get(c)!.length === 2)), "lv3 カギは完全交差スロットのみ");
   assert(lv3.every((a) => lv3.every((b) => a.id >= b.id || !a.cells.some((c) => b.cells.includes(c)))), "lv3 スロット同士は交差しない");
-  console.log(`[generate] OK (mix ${p1.mix[1]}/${p1.mix[2]}/${p1.mix[3]})`);
+
+  // 6 日連続生成: 新出語の位置とカギ、難語の blackout、新出 / 復習ラベルの正しさ（復習が「必ず 1 語ある」は埋め都合で揺れるので見ない）
+  addToHistory(h, { date: addDays(d1, 1), answers: p2.answers, clueIndex: p2.clueIndex });
+  const hardUses = new Map<string, string>(); // 難語 → 最後に使った日
+  const noteHard = (p: typeof p1, date: string) => {
+    for (const sid of p.hard) hardUses.set(p.answers[sid]!, date);
+  };
+  noteHard(p1, d1);
+  noteHard(p2, addDays(d1, 1));
+  let newTotal = p1.learn.new.length + p2.learn.new.length;
+  for (let i = 2; i < 6; i++) {
+    const date = addDays(d1, i);
+    const p = generatePuzzle(date, synth, templates, h);
+    const slots = deriveSlots(p.spec.grid);
+    const cmap = cellSlotMap(slots);
+    const fresh = slots.filter((s) => p.learn.new.includes(s.id));
+    assert(fresh.length <= DEFAULT_PROFILE.maxNew, `${date}: 新出語 ≤ maxNew`);
+    assert(fresh.every((s) => s.cells.every((c) => cmap.get(c)!.length === 2)), `${date}: 新出語は完全交差スロットのみ`);
+    assert(fresh.every((a) => fresh.every((b) => a.id >= b.id || !a.cells.some((c) => b.cells.includes(c)))), `${date}: 新出語同士は交差しない`);
+    assert(fresh.every((s) => p.levels[s.id] === 1), `${date}: 新出語のカギは lv1`);
+    for (const sid of p.learn.new) {
+      const kana = p.answers[sid]!;
+      assert(synth.words[synth.byKana.get(kana)!]!.difficulty >= 2 && !hardUses.has(kana), `${date}: 新出語 ${kana} は初出の難語`);
+    }
+    for (const sid of p.learn.review) assert(hardUses.has(p.answers[sid]!), `${date}: 復習語 ${p.answers[sid]} は既出の難語`);
+    for (const sid of p.hard) {
+      const kana = p.answers[sid]!;
+      const last = hardUses.get(kana);
+      if (last) assert(diffDays(last, date) >= HARD_SCHEDULE[0]!.blackout, `${date}: 難語 ${kana} が blackout 中（前回 ${last}）に戻っていない`);
+      assert(p.learn.new.includes(sid) || p.learn.review.includes(sid), `${date}: 難語 ${kana} は新出か復習のどちらか`);
+    }
+    newTotal += p.learn.new.length;
+    noteHard(p, date);
+    addToHistory(h, { date, answers: p.answers, clueIndex: p.clueIndex });
+  }
+  assert(newTotal > 0, "6 日間で新出語が 1 語以上出る");
+
+  // schedule(): blackout 中は除外、ウィンドウ内は window、過ぎたら due。difficulty 1 は 10 日クールダウン
+  const hard2 = synth.words.filter((w) => w.difficulty >= 2).slice(0, 4).map((w) => w.kana);
+  const easy = synth.words.filter((w) => w.difficulty === 1).slice(0, 2).map((w) => w.kana);
+  const today = "2027-06-30";
+  const hs = emptyHistory();
+  hs.uses.set(hard2[0]!, [addDays(today, -2)]);
+  hs.uses.set(hard2[1]!, [addDays(today, -5)]);
+  hs.uses.set(hard2[2]!, [addDays(today, -9)]);
+  hs.uses.set(hard2[3]!, [addDays(today, -40), addDays(today, -10)]);
+  hs.uses.set(easy[0]!, [addDays(today, -5)]);
+  hs.uses.set(easy[1]!, [addDays(today, -12)]);
+  const sch = schedule(hs, today, synth);
+  assert(sch.exclude.has(hard2[0]!) && !sch.review.has(hard2[0]!), "難語: 2 日前に使った語は除外");
+  assert(sch.review.get(hard2[1]!) === "window", "難語: 5 日前に使った語は復習ウィンドウ内");
+  assert(sch.review.get(hard2[2]!) === "due", "難語: 9 日前に使った語はウィンドウを過ぎて due");
+  assert(sch.exclude.has(hard2[3]!), "難語: 2 回使って 10 日前なら除外（2 回目の blackout は 14 日）");
+  assert(sch.exclude.has(easy[0]!) && !sch.exclude.has(easy[1]!), "difficulty 1: 5 日前は除外、12 日前は使える");
+  console.log(`[generate] OK (mix ${p1.mix[1]}/${p1.mix[2]}/${p1.mix[3]}, 6 日で新出 ${newTotal} 語)`);
 }
 
 console.log("✅ smoketest passed");

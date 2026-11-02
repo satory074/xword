@@ -89,7 +89,8 @@ export interface Api {
   getPuzzle(date: string | null): Promise<PuzzleResponse>;
   listDates(): Promise<DateList>;
   checkGrid(date: string, cells: string, durationSec: number): Promise<CheckResult>;
-  revealSlot(date: string, slotId: string): Promise<string>;
+  /** ヒント: 盤面 index（0〜48）の白マス 1 文字を返す（RPC reveal_cell） */
+  revealCell(date: string, cell: number): Promise<string>;
   syncResults(items: SyncItem[]): Promise<SolveRow[]>;
   fetchMySolves(): Promise<SolveRow[]>;
 }

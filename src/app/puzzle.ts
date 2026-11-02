@@ -1,5 +1,5 @@
 // 盤面ページ（今日 / ?d=YYYY-MM-DD）。盤面・カギ・入力・答え合わせ・ヒント・完了表示。
-// 解答はサーバーにしかない。答え合わせは api.checkGrid、ヒントは api.revealSlot。
+// 解答はサーバーにしかない。答え合わせは api.checkGrid、ヒントは api.revealCell（カーソルのマス 1 文字だけ。語を丸ごと見せると想起が消える）。
 import { fmtDateJa, fmtDuration, isDateKey } from "../lib/date";
 import { errorKey } from "../lib/errors";
 import { BLACK, CELLS, cellIndex, deriveSlots, EMPTY, SIZE, type Dir, type Slot } from "../lib/grid";
@@ -179,7 +179,7 @@ class PlayView {
             <div data-role="keyboard">${keyboardHtml()}</div>
             <div class="play-actions">
               <button class="btn btn-primary" data-action="check">答え合わせ</button>
-              <button class="btn" data-action="reveal">ヒント（この語の答え）</button>
+              <button class="btn" data-action="reveal">ヒント（このマスの 1 文字）</button>
               <button class="btn btn-ghost" data-action="clear">入力を消す</button>
             </div>
             <div data-role="result"></div>
@@ -260,7 +260,7 @@ class PlayView {
     const box = this.root.querySelector<HTMLElement>('[data-role="result"]')!;
     box.innerHTML = `<div class="card pad solved-panel">
       <h2>完成！ 🎉</h2>
-      <p class="tnum">タイム ${fmtDuration(s.elapsedSec)} ／ 答え合わせ ${s.checks} 回${s.reveals ? ` ／ ヒント ${s.reveals} 語` : ""}</p>
+      <p class="tnum">タイム ${fmtDuration(s.elapsedSec)} ／ 答え合わせ ${s.checks} 回${s.reveals ? ` ／ ヒント ${s.reveals} 文字` : ""}</p>
       <p class="muted">${stats.currentStreak > 1 ? `🔥 ${stats.currentStreak} 日連続` : "明日も挑戦しよう"}${s.session ? "" : "　※ログインすると記録が端末をまたいで保存されます"}</p>
       <div class="play-actions">
         <button class="btn btn-primary" data-action="share">結果をコピー</button>
@@ -514,27 +514,26 @@ class PlayView {
     }
   }
 
+  /** ヒント: カーソルのマス 1 文字だけ開ける（語を丸ごと見せない。残りは交差から推測してもらう） */
   private async reveal(): Promise<void> {
     const s = this.s;
     const slot = this.currentSlot();
     if (s.solved || this.busy || !slot) return;
-    if (slot.cells.every((c) => s.revealed.has(c))) {
-      showToast("この語はすでに表示されています");
+    const cell = s.cursor;
+    if (s.revealed.has(cell)) {
+      showToast("このマスはすでに表示されています");
       return;
     }
     this.busy = true;
     try {
-      const word = await this.deps.api.revealSlot(s.date, slot.id);
-      const chars = Array.from(word);
-      slot.cells.forEach((c, i) => {
-        s.cells[c] = chars[i] ?? EMPTY;
-        s.revealed.add(c);
-        if (s.mask) s.mask[c] = "1";
-      });
+      const ch = Array.from(await this.deps.api.revealCell(s.date, cell))[0] ?? EMPTY;
+      s.cells[cell] = ch;
+      s.revealed.add(cell);
+      if (s.mask) s.mask[cell] = "1";
       s.reveals++;
       this.saveProgress();
       this.refresh();
-      showToast(`${slot.dir === "A" ? "ヨコ" : "タテ"} ${slot.num} の答えを表示しました`);
+      showToast(`${slot.dir === "A" ? "ヨコ" : "タテ"} ${slot.num} の 1 文字を表示しました`);
     } catch (e) {
       showToast(errorMessage(e), true);
     } finally {
