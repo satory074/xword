@@ -262,6 +262,11 @@ a {
 .xw-cell.is-cursor {
   background: var(--cursor);
 }
+/* 矢印キーで語の外へ出たマス（まだ語を選んでいない）。Enter で選ぶ */
+.xw-cell.is-pointing {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
 .xw-cell.is-wrong .xw-ch {
   color: var(--wrong);
   text-decoration: line-through;

@@ -203,6 +203,13 @@ class PlayView {
   private consuming = false;
   /** 直前に文字を書いたマス。゛゜はカーソルではなくここに掛ける（打った直後はカーソルが進んでいる） */
   private lastTyped: number | null = null;
+  /**
+   * カーソルのマスの語が「選ばれている」か。矢印キーで語の外へ出ると false（黄色い枠だけ・語の色なし）になり、
+   * Enter（または文字入力・クリック）で true に戻る。true の間の Enter は縦横の切り替え
+   */
+  private selected = true;
+  /** 直近の compositionend の時刻。Safari は IME 確定の Enter を compositionend の後に届けるので、直後の Enter は捨てる */
+  private composedAt = Number.NEGATIVE_INFINITY;
   private kbMode: KbMode;
 
   constructor(
@@ -272,7 +279,7 @@ class PlayView {
     const grid = this.root.querySelector<HTMLElement>('[data-role="grid"]')!;
     const numAt = new Map<number, number>();
     for (const sl of s.slots) numAt.set(cellIndex(sl.r, sl.c), sl.num);
-    const word = new Set(this.currentSlot()?.cells ?? []);
+    const word = new Set(this.selected ? (this.currentSlot()?.cells ?? []) : []);
     // 変換中の文字列・未確定ローマ字を薄く重ねる（state には書かない）
     const overlay = new Map<number, string>();
     if (this.preview) {
@@ -288,7 +295,7 @@ class PlayView {
         continue;
       }
       const cls = ["xw-cell"];
-      if (i === s.cursor) cls.push("is-cursor");
+      if (i === s.cursor) cls.push(this.selected ? "is-cursor" : "is-cursor is-pointing");
       if (word.has(i)) cls.push("is-word");
       if (s.mask && s.mask[i] === "0") cls.push("is-wrong");
       if (s.solved) cls.push("is-solved");
@@ -304,7 +311,7 @@ class PlayView {
   }
 
   private renderClueState(): void {
-    const cur = this.currentSlot();
+    const cur = this.selected ? this.currentSlot() : undefined;
     for (const li of this.root.querySelectorAll<HTMLElement>("[data-slot]")) {
       li.classList.toggle("is-active", li.dataset.slot === cur?.id);
       const slot = this.s.slots.find((x) => x.id === li.dataset.slot)!;
@@ -313,7 +320,9 @@ class PlayView {
     const bar = this.root.querySelector<HTMLElement>('[data-role="current-clue"]')!;
     bar.innerHTML = cur
       ? `<span class="clue-dir">${cur.dir === "A" ? "ヨコ" : "タテ"} ${cur.num}</span> ${esc(cur.clue)} <span class="clue-len">(${cur.len})</span>`
-      : "";
+      : this.selected
+        ? ""
+        : `<span class="muted">Enter でこのマスの語を選ぶ（もう一度 Enter で縦横を切り替え）</span>`;
     const active = this.root.querySelector<HTMLElement>(`[data-slot="${cur?.id}"]`);
     if (active && typeof active.scrollIntoView === "function") active.scrollIntoView({ block: "nearest" });
   }
@@ -395,6 +404,7 @@ class PlayView {
     this.hidden.addEventListener("compositionend", () => {
       this.composing = false;
       this.preview = "";
+      this.composedAt = performance.now();
       this.consumeHidden(true);
     });
     this.hidden.addEventListener("blur", () => {
@@ -415,12 +425,17 @@ class PlayView {
         }
         return;
       }
+      // 矢印は盤面を上下左右に自由に動く（黒マスは飛ばす）。語の外に出たら Enter で選ぶ
+      const step: Record<string, [number, number]> = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] };
+      const d = step[ev.key];
+      if (d) {
+        ev.preventDefault();
+        this.flushPendingRomaji();
+        this.moveFree(d[0], d[1]);
+        return;
+      }
       const map: Record<string, KeyAction> = {
         Delete: { type: "delete" },
-        ArrowLeft: { type: "prev" },
-        ArrowRight: { type: "next" },
-        ArrowUp: { type: "prev" },
-        ArrowDown: { type: "next" },
         " ": { type: "toggleDir" },
       };
       const a = map[ev.key];
@@ -433,12 +448,24 @@ class PlayView {
         this.flushPendingRomaji();
         this.nextSlot(ev.shiftKey ? -1 : 1);
       } else if (ev.key === "Enter") {
-        // Enter は IME の確定キー（Safari は確定の Enter を compositionend の後に isComposing=false で届ける）。
-        // 単独では答え合わせしない。Ctrl/⌘+Enter だけ答え合わせ
         ev.preventDefault();
-        this.flushPendingRomaji();
-        this.refresh();
-        if (ev.ctrlKey || ev.metaKey) void this.check();
+        if (ev.ctrlKey || ev.metaKey) {
+          this.flushPendingRomaji();
+          this.refresh();
+          void this.check();
+          return;
+        }
+        // IME 確定の Enter は無視する。Chrome は isComposing / 229 で上で弾ける。Safari は確定の Enter を
+        // compositionend の後に isComposing=false で届けることがあるので、直後 100ms の Enter も捨てる
+        if (performance.now() - this.composedAt < 100) return;
+        // 未確定のローマ字があれば、Enter はその確定だけ（pan + Enter → パン）
+        if (this.romaji) {
+          this.flushPendingRomaji();
+          this.refresh();
+          return;
+        }
+        // 1 回目: カーソルのマスの語を選ぶ。選ばれていれば縦横を切り替え（マスを 2 回クリックしたのと同じ）
+        this.onKey({ type: "toggleDir" });
       }
       // それ以外（文字キー）は preventDefault しない → input イベントで受ける
     });
@@ -466,6 +493,7 @@ class PlayView {
     if (s.solved) return;
     const chars = Array.from(text).filter(isGridKana);
     if (chars.length === 0) return;
+    this.selected = true; // 未選択のマスに打ったら、そのマスの語を選んだことにする
     const p = planPlacement(this.currentSlot(), s.cursor, chars, s.revealed);
     for (const w of p.writes) {
       s.cells[w.cell] = w.ch;
@@ -528,17 +556,43 @@ class PlayView {
     this.focusHidden();
   }
 
+  /**
+   * 矢印キー: 盤面を (dr, dc) の向きに次の白マスまで動く（黒マスは飛ばす。端なら動かない）。
+   * 選ばれている語の中にとどまる間は選択のまま。語の外に出たら未選択（Enter で選ぶ）
+   */
+  private moveFree(dr: number, dc: number): void {
+    const s = this.s;
+    const word = this.selected ? this.currentSlot() : undefined;
+    let r = Math.floor(s.cursor / SIZE) + dr;
+    let c = (s.cursor % SIZE) + dc;
+    while (r >= 0 && r < SIZE && c >= 0 && c < SIZE) {
+      const i = cellIndex(r, c);
+      if (s.cells[i] !== BLACK) {
+        s.cursor = i;
+        this.lastTyped = null;
+        this.selected = word !== undefined && word.cells.includes(i);
+        // Enter で選ぶ語の向き: 今の向きの語が無いマスなら反対向き（クリックと同じ）
+        if (!this.currentSlot()) s.dir = s.dir === "A" ? "D" : "A";
+        break;
+      }
+      r += dr;
+      c += dc;
+    }
+    this.refresh();
+  }
+
   private onCellTap(i: number): void {
     if (this.s.cells[i] === BLACK) return;
     this.commitComposition();
     this.flushPendingRomaji();
     this.lastTyped = null;
-    if (i === this.s.cursor) {
+    if (i === this.s.cursor && this.selected) {
       this.toggleDir();
     } else {
       this.s.cursor = i;
       if (!this.currentSlot()) this.s.dir = this.s.dir === "A" ? "D" : "A";
     }
+    this.selected = true;
     this.refresh();
     this.focusHidden();
   }
@@ -551,6 +605,7 @@ class PlayView {
     this.lastTyped = null;
     this.s.dir = slot.dir;
     this.s.cursor = slot.cells.find((c) => this.s.cells[c] === EMPTY) ?? slot.cells[0]!;
+    this.selected = true;
     this.refresh();
     this.focusHidden();
   }
@@ -592,6 +647,7 @@ class PlayView {
       }
       case "delete": {
         this.lastTyped = null;
+        this.selected = true;
         if (s.cells[s.cursor] !== EMPTY && !s.revealed.has(s.cursor)) {
           this.setCell(s.cursor, EMPTY);
         } else if (slot) {
@@ -605,15 +661,19 @@ class PlayView {
       }
       case "prev":
         this.lastTyped = null;
+        this.selected = true;
         this.move(-1);
         break;
       case "next":
         this.lastTyped = null;
+        this.selected = true;
         this.move(1);
         break;
       case "toggleDir":
+        // 未選択なら選ぶだけ、選ばれていれば縦横を切り替え（Enter・Space・画面の「ヨコ/タテ」で共通）
         this.lastTyped = null;
-        this.toggleDir();
+        if (this.selected) this.toggleDir();
+        else this.selected = true;
         break;
     }
     this.refresh();

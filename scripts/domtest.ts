@@ -2,10 +2,11 @@
 // 実行: npx tsx scripts/domtest.ts（Supabase には一切接続しない）
 // 不変条件: ①未ログインで解いた結果が端末に残る ②ログイン後の起動で未同期分だけが 1 回同期される
 //           ③同期済みなら再送しない ④誤りマスは答え合わせで赤くなり、入力すると消える
-//           ⑤IME で語をまとめて確定すると全文字が盤面に入り、変換中は何も書かれず、確定の Enter で答え合わせされない
+//           ⑤IME で語をまとめて確定すると全文字が盤面に入り、変換中は何も書かれず、確定の Enter で答え合わせも縦横切替もされない
+//           ⑥矢印は黒マスを飛ばして盤面を動き、語の外では未選択。Enter 1 回目でそのマスの語を選び、2 回目以降で縦横を切り替える
 import { JSDOM } from "jsdom";
 import { loadBank, type WordEntry } from "../src/lib/bank";
-import { deriveSlots, scoreCells } from "../src/lib/grid";
+import { cellIndex, deriveSlots, scoreCells } from "../src/lib/grid";
 import { toHiragana } from "../src/lib/kana";
 import { createRng } from "../src/lib/rng";
 import { memoryKV, progressKey, readResults } from "../src/lib/storage";
@@ -255,6 +256,8 @@ function typeIntoSlot(dom: ReturnType<typeof setupDom>, slotId: string, text: st
   input.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", isComposing: false })); // Safari は確定の Enter が後から来る
   await tick();
   assert(world.calls.check === 0, "確定後の Enter 単独でも答え合わせにならない");
+  const wordNow = [...dom.root.querySelectorAll<HTMLElement>(".xw-cell.is-word")].map((e) => Number(e.dataset.cell));
+  assert(wordNow.length === slot.cells.length && slot.cells.every((c) => wordNow.includes(c)), "IME 確定直後の Enter（Safari の順）では縦横が切り替わらない");
   const got = slot.cells.map((c) => dom.root.querySelector(`[data-cell="${c}"] .xw-ch`)!.textContent).join("");
   assert(got === answer, `確定した全文字が語に入る（${got} / ${answer}）`);
   assert(dom.root.querySelectorAll(".xw-cell.is-preview").length === 0, "確定後に仮表示は残らない");
@@ -288,6 +291,59 @@ function typeIntoSlot(dom: ReturnType<typeof setupDom>, slotId: string, text: st
   assert(dom.root.querySelector(".kb.kb-screen") !== null && input.getAttribute("inputmode") === "none", "50 音パネルに切り替わる");
   assert(kv.get("xword:kb") === "screen", "切替は端末に保存される");
   console.log("[ime] OK");
+}
+
+// ---- ⑥ 矢印で盤面を動く → 語の外では未選択 → Enter 1 回目で選ぶ → 2 回目以降で縦横切替。黒マスは飛ばす ----
+{
+  const world = makeWorld();
+  const deps: AppDeps = { api: world.api, auth: makeAuth(null), storage: memoryKV(), now: () => NOW };
+  const dom = await bootPuzzle(deps);
+  const win = dom.root.ownerDocument.defaultView!;
+  const input = dom.hidden();
+  const key = (k: string) => input.dispatchEvent(new win.KeyboardEvent("keydown", { key: k, bubbles: true }));
+  const cursor = () => Number(dom.root.querySelector<HTMLElement>(".xw-cell.is-cursor")!.dataset.cell);
+  const word = () => [...dom.root.querySelectorAll<HTMLElement>(".xw-cell.is-word")].map((e) => Number(e.dataset.cell));
+  const isWord = (cells: number[]) => word().length === cells.length && cells.every((c) => word().includes(c));
+
+  // ヨコの語の先頭で、タテの語も通るマス X
+  const across = slots.find((a) => a.dir === "A" && slots.some((d) => d.dir === "D" && d.cells.includes(a.cells[0]!)))!;
+  const X = across.cells[0]!;
+  const down = slots.find((d) => d.dir === "D" && d.cells.includes(X))!;
+  const away = down.cells.indexOf(X) < down.cells.length - 1 ? "ArrowDown" : "ArrowUp"; // タテの語の隣の白マスへ
+  const back = away === "ArrowDown" ? "ArrowUp" : "ArrowDown";
+
+  dom.root.querySelector<HTMLElement>(`[data-slot="${across.id}"]`)!.click();
+  assert(cursor() === X && isWord(across.cells), "カギを選ぶとヨコの語が選ばれる");
+  key("ArrowRight");
+  assert(cursor() === across.cells[1] && isWord(across.cells), "語の中の移動は選択のまま");
+  key("ArrowLeft");
+  key(away);
+  assert(cursor() !== X && word().length === 0 && dom.root.querySelector(".xw-cell.is-pointing") !== null, "語の外へ出ると未選択（語の色なし）");
+  key(back);
+  assert(cursor() === X && word().length === 0, "戻っても Enter までは未選択");
+  key("Enter");
+  assert(isWord(across.cells) && dom.root.querySelector(".xw-cell.is-pointing") === null, "Enter 1 回目でそのマスの語を選ぶ");
+  key("Enter");
+  assert(cursor() === X && isWord(down.cells), "Enter 2 回目で縦横を切り替える");
+  key("Enter");
+  assert(isWord(across.cells), "Enter 3 回目でまた切り替える");
+  assert(world.calls.check === 0, "Enter 単独では答え合わせしない");
+
+  // 黒マスを飛ばす: 白・黒・白 と縦に並ぶ列で、上の白から ↓ で下の白へ
+  const g = gen.spec.grid;
+  let from = -1;
+  let to = -1;
+  for (let r = 0; r + 2 < 7 && from < 0; r++)
+    for (let c = 0; c < 7 && from < 0; c++)
+      if (g[r]![c] !== "#" && g[r + 1]![c] === "#" && g[r + 2]![c] !== "#") {
+        from = cellIndex(r, c);
+        to = cellIndex(r + 2, c);
+      }
+  assert(from >= 0, "フィクスチャに 白・黒・白 の縦並びがある");
+  dom.root.querySelector<HTMLElement>(`[data-cell="${from}"]`)!.click();
+  key("ArrowDown");
+  assert(cursor() === to, "矢印は黒マスを飛ばして次の白マスへ");
+  console.log("[arrows] OK");
 }
 
 console.log("✅ domtest passed");
