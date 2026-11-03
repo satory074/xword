@@ -226,6 +226,12 @@ a {
     top: 3.5rem;
   }
 }
+/* 盤面と隠し input の親。隠し input をカーソルのマスに重ねるための基準（.xw-grid 自体は position を持たせない） */
+.xw-grid-wrap {
+  position: relative;
+  width: max-content;
+  margin: 0 auto;
+}
 .xw-grid {
   display: grid;
   grid-template-columns: repeat(7, var(--cell));
@@ -233,8 +239,6 @@ a {
   gap: 0;
   border: 2px solid var(--ink);
   background: var(--ink);
-  width: max-content;
-  margin: 0 auto;
   user-select: none;
 }
 .xw-cell {
@@ -271,6 +275,11 @@ a {
 .xw-cell.is-solved {
   background: var(--ok-soft);
 }
+/* IME 変換中・未確定ローマ字の仮表示 */
+.xw-cell.is-preview .xw-ch {
+  color: var(--ink-soft);
+  font-weight: 500;
+}
 .xw-num {
   position: absolute;
   top: 1px;
@@ -299,12 +308,23 @@ a {
   font-size: 0.8rem;
   margin-left: 0.25rem;
 }
+/* 物理キーボード・OS キーボードを受ける隠し input。カーソルのマスに重ねる（位置は puzzle.ts の placeHidden）。
+   16px 未満だと iOS がフォーカス時にズームする。pointer-events: none でタップは下のマスに届く */
 .hidden-input {
   position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--cell);
+  height: var(--cell);
   opacity: 0;
-  width: 1px;
-  height: 1px;
-  left: -9999px;
+  font-size: 16px;
+  color: transparent;
+  caret-color: transparent;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  padding: 0;
+  pointer-events: none;
 }
 
 /* ---- キーボード ---- */
@@ -320,7 +340,16 @@ a {
   gap: 0.25rem;
 }
 .kb-row.kb-ctrl {
-  grid-template-columns: 1fr 2fr 1fr 1fr;
+  grid-template-columns: 1fr 2fr 1fr 1fr 2fr;
+}
+/* 端末のキーボードで打つモード: 文字行は隠し、操作列（移動・方向・削除・切替）だけ出す */
+.kb.kb-device .kb-row:not(.kb-ctrl) {
+  display: none;
+}
+.kb-toggle {
+  font-size: 0.8rem;
+  white-space: nowrap;
+  padding: 0 0.25rem;
 }
 .kb-key {
   height: 2.4rem;

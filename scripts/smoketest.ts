@@ -1,6 +1,7 @@
 // 純ロジックの不変条件テスト。実行: npx tsx scripts/smoketest.ts
 // 件数ではなく「壊れたら困る不変条件」を 1 つずつ検証する:
 //   1) 同梱テンプレートが合法  2) カナ正規化が不動点で SQL と変換表が一致  3) 語彙バンク（あれば）が健全
+//   2b) ローマ字→カナが Google IME と同じ結果で、出力が盤面の文字集合に収まる
 //   4) 埋めが正しく決定的  5) 採点が正しい  6) 記録の優劣順序  7) 連続日数
 //   8) 生成結果に答えが漏れず、難しいカギ・新出語が公平な位置にあり、難語の間隔反復（blackout / ウィンドウ）が守られる
 import { existsSync, readFileSync } from "node:fs";
@@ -9,6 +10,7 @@ import { candidates, lintEntry, loadBank, type WordEntry } from "../src/lib/bank
 import { addDays, diffDays, fmtDateJa, isDateKey, jstDateKey } from "../src/lib/date";
 import { deriveSlots, scoreCells, solutionFromAnswers, validateTemplate, cellSlotMap } from "../src/lib/grid";
 import { DASH_FROM, DASH_TO, GRID_KANA, normalizeKana, SMALL_FROM, SMALL_TO, toHiragana } from "../src/lib/kana";
+import { feedText, flushRomaji, romajiToKana } from "../src/lib/romaji";
 import { createRng } from "../src/lib/rng";
 import { computeStats } from "../src/lib/stats";
 import { betterSolve } from "../src/lib/storage";
@@ -53,6 +55,31 @@ const templates = readTemplates();
   assert(cls !== null && cls[1] === GRID_KANA, "SQL の文字クラスが GRID_KANA と一致");
   assert(Array.from(GRID_KANA).length === 71 && new Set(GRID_KANA).size === 71, "GRID_KANA は 71 文字で重複なし");
   console.log("[kana] OK");
+}
+
+// ---- 2b) ローマ字→カナ: ヘボン/訓令の同義、n の規則、促音、カナ素通し。出力は盤面の文字だけ ----
+{
+  const cases: [string, string][] = [
+    ["kyatto", "キヤツト"],
+    ["kanna", "カンナ"],
+    ["kannji", "カンジ"],
+    ["konnichiha", "コンニチハ"],
+    ["shinbun", "シンブン"],
+    ["matchi", "マツチ"],
+    ["pan", "パン"],
+    ["kann", "カン"],
+    ["kan'i", "カンイ"],
+    ["カナ-", "カナー"],
+    ["ｋａｎａ", "カナ"],
+  ];
+  for (const [src, want] of cases) assert(romajiToKana(src) === want, `romaji ${src} → ${romajiToKana(src)}（期待 ${want}）`);
+  for (const [a, b] of [["si", "shi"], ["ti", "chi"], ["tu", "tsu"], ["hu", "fu"], ["zi", "ji"], ["zya", "ja"], ["sya", "sha"], ["tya", "cha"]])
+    assert(romajiToKana(a!) === romajiToKana(b!), `訓令 ${a} と ヘボン ${b} が同じ`);
+  const step = feedText("", "k");
+  assert(step.out === "" && step.buf === "k", "子音だけなら未確定のまま持ち越す");
+  assert(flushRomaji("n") === "ン" && flushRomaji("k") === "" && flushRomaji("N") === "", "確定は n だけがン");
+  for (const [src] of cases) for (const ch of romajiToKana(src)) assert(GRID_KANA.includes(ch), `${src} の出力 ${ch} が盤面の文字`);
+  console.log("[romaji] OK");
 }
 
 // ---- 3) 語彙バンク（../xword-private/words があれば）----

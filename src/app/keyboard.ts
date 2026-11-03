@@ -1,5 +1,20 @@
 // 画面内の 50 音キーボード。清音 + ン + ー、濁点/半濁点トグル、削除、移動。
-// 物理キーボード（IME）の入力は puzzle.ts の隠し input が受ける。
+// 物理キーボード・スマホの OS キーボード（IME）の入力は puzzle.ts の隠し input が受ける。
+// モード: "device"（端末のキーボード。50 音の文字行は隠し、操作列だけ出す）/ "screen"（50 音パネル）。
+import type { KV } from "../lib/types";
+
+export type KbMode = "device" | "screen";
+export const KB_MODE_KEY = "xword:kb";
+
+export function readKbMode(kv: KV): KbMode | null {
+  const v = kv.get(KB_MODE_KEY);
+  return v === "device" || v === "screen" ? v : null;
+}
+
+export function writeKbMode(kv: KV, mode: KbMode): void {
+  kv.set(KB_MODE_KEY, mode);
+}
+
 export type KeyAction =
   | { type: "char"; ch: string }
   | { type: "dakuten" }
@@ -44,7 +59,7 @@ export function toggleHandakuten(ch: string): string {
   return ch;
 }
 
-export function keyboardHtml(): string {
+export function keyboardHtml(mode: KbMode): string {
   const rows = ROWS.map((row) => {
     const keys = row
       .map((k) => {
@@ -62,9 +77,10 @@ export function keyboardHtml(): string {
       <button type="button" class="kb-key kb-wide" data-key="toggleDir" aria-label="方向を切り替え">ヨコ/タテ</button>
       <button type="button" class="kb-key kb-wide" data-key="next" aria-label="次のマス">▶</button>
       <button type="button" class="kb-key kb-wide kb-del" data-key="delete" aria-label="削除">⌫</button>
+      <button type="button" class="kb-key kb-wide kb-toggle" data-action="kb-mode" data-mode="${mode === "device" ? "screen" : "device"}" aria-label="入力方法を切り替え">${mode === "device" ? "50音パネル" : "端末キーボード"}</button>
     </div>`,
   );
-  return `<div class="kb" role="group" aria-label="カナ入力">${rows.join("")}</div>`;
+  return `<div class="kb kb-${mode}" role="group" aria-label="カナ入力">${rows.join("")}</div>`;
 }
 
 /** クリックイベント → KeyAction（キーボード以外なら null） */

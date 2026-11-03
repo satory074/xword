@@ -3,7 +3,8 @@
 import { fmtDateJa, fmtDuration, isDateKey } from "../lib/date";
 import { errorKey } from "../lib/errors";
 import { BLACK, CELLS, cellIndex, deriveSlots, EMPTY, SIZE, type Dir, type Slot } from "../lib/grid";
-import { isGridKana, normalizeKana } from "../lib/kana";
+import { isGridKana } from "../lib/kana";
+import { feedText, flushRomaji, romajiToKana } from "../lib/romaji";
 import { shareText } from "../lib/share";
 import { computeStats } from "../lib/stats";
 import {
@@ -17,7 +18,16 @@ import {
 } from "../lib/storage";
 import type { AppDeps, LocalResult, PublicPuzzle, SessionInfo } from "../lib/types";
 import { mountHeader } from "./header";
-import { actionFromEvent, keyboardHtml, toggleDakuten, toggleHandakuten, type KeyAction } from "./keyboard";
+import {
+  actionFromEvent,
+  keyboardHtml,
+  readKbMode,
+  toggleDakuten,
+  toggleHandakuten,
+  writeKbMode,
+  type KbMode,
+  type KeyAction,
+} from "./keyboard";
 import { syncWithServer } from "./sync";
 import { BASE, errorMessage, esc, link, showToast } from "./ui";
 
@@ -150,16 +160,59 @@ function watchForNewPuzzle(deps: AppDeps, currentDate: string): void {
   });
 }
 
+/** マウス等の精密ポインタがある端末（≒ PC）。jsdom は matchMedia が無いので false */
+function finePointer(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+}
+
+interface Placement {
+  writes: { cell: number; ch: string }[];
+  cursor: number;
+}
+
+/**
+ * text をカーソルから語の末尾へ順に置く計画。IME の確定・画面キーボード・変換中プレビューで共通。
+ * 開示済み（ヒント）のマスは 1 文字消費して通過し、書かない。語の末尾で打ち切り、余りは捨てる。
+ * カーソルは最後に訪れたマスの次（無ければ語の最後のマス。折り返さない）。
+ */
+function planPlacement(slot: Slot | undefined, from: number, text: string[], revealed: Set<number>): Placement {
+  if (text.length === 0) return { writes: [], cursor: from };
+  const pos0 = slot ? slot.cells.indexOf(from) : -1;
+  if (!slot || pos0 < 0) return { writes: revealed.has(from) ? [] : [{ cell: from, ch: text[0]! }], cursor: from };
+  const writes: Placement["writes"] = [];
+  let pos = pos0;
+  for (let k = 0; k < text.length && pos < slot.cells.length; k++, pos++) {
+    const cell = slot.cells[pos]!;
+    if (!revealed.has(cell)) writes.push({ cell, ch: text[k]! });
+  }
+  return { writes, cursor: slot.cells[Math.min(pos, slot.cells.length - 1)]! };
+}
+
 class PlayView {
   private timer: ReturnType<typeof setInterval> | null = null;
   private busy = false;
   private hidden!: HTMLInputElement;
+  // ---- 入力の一時状態（State には入れず、保存もしない）----
+  /** IME 変換中（compositionstart〜compositionend） */
+  private composing = false;
+  /** 変換中の文字列（正規化済み）。マスに薄く描くだけで state には書かない */
+  private preview = "";
+  /** 未確定のローマ字（"k" "ky" "n"、"N" = nn の 2 つ目）。romaji.ts の約束どおり */
+  private romaji = "";
+  /** consumeHidden の再入ガード（Firefox は value 代入中に同期で compositionend を投げる） */
+  private consuming = false;
+  /** 直前に文字を書いたマス。゛゜はカーソルではなくここに掛ける（打った直後はカーソルが進んでいる） */
+  private lastTyped: number | null = null;
+  private kbMode: KbMode;
 
   constructor(
     private root: HTMLElement,
     private s: State,
     private deps: AppDeps,
-  ) {}
+  ) {
+    // 既定は端末のキーボード（PC は物理キー、スマホは OS キーボード）。50 音パネルは切替で出す
+    this.kbMode = readKbMode(deps.storage) ?? "device";
+  }
 
   // ---- 描画 ----
 
@@ -173,10 +226,12 @@ class PlayView {
         </div>
         <div class="play-main">
           <div class="play-left">
-            <div class="xw-grid" role="grid" aria-label="クロスワード盤面" data-role="grid"></div>
+            <div class="xw-grid-wrap">
+              <div class="xw-grid" role="grid" aria-label="クロスワード盤面" data-role="grid"></div>
+              <input class="hidden-input" data-role="hidden" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="カナ入力" inputmode="${this.kbMode === "screen" ? "none" : "text"}" />
+            </div>
             <div class="current-clue" data-role="current-clue"></div>
-            <input class="hidden-input" data-role="hidden" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="カナ入力" inputmode="none" />
-            <div data-role="keyboard">${keyboardHtml()}</div>
+            <div data-role="keyboard">${keyboardHtml(this.kbMode)}</div>
             <div class="play-actions">
               <button class="btn btn-primary" data-action="check">答え合わせ</button>
               <button class="btn" data-action="reveal">ヒント（このマスの 1 文字）</button>
@@ -196,10 +251,13 @@ class PlayView {
       </div>`;
     this.hidden = this.root.querySelector<HTMLInputElement>('[data-role="hidden"]')!;
     this.bind();
-    this.renderGrid();
-    this.renderClueState();
+    this.refresh();
     if (s.solved) this.renderSolved();
-    else this.startTimer();
+    else {
+      this.startTimer();
+      // PC はすぐ打てるように。スマホは勝手に OS キーボードを出さない（マスのタップで出す）
+      if (finePointer()) this.focusHidden();
+    }
   }
 
   private cluesHtml(dir: Dir): string {
@@ -215,6 +273,13 @@ class PlayView {
     const numAt = new Map<number, number>();
     for (const sl of s.slots) numAt.set(cellIndex(sl.r, sl.c), sl.num);
     const word = new Set(this.currentSlot()?.cells ?? []);
+    // 変換中の文字列・未確定ローマ字を薄く重ねる（state には書かない）
+    const overlay = new Map<number, string>();
+    if (this.preview) {
+      for (const w of planPlacement(this.currentSlot(), s.cursor, Array.from(this.preview).filter(isGridKana), s.revealed).writes) overlay.set(w.cell, w.ch);
+    } else if (this.romaji && this.romaji !== "N" && !s.revealed.has(s.cursor)) {
+      overlay.set(s.cursor, this.romaji);
+    }
     let html = "";
     for (let i = 0; i < CELLS; i++) {
       const ch = s.cells[i]!;
@@ -228,9 +293,12 @@ class PlayView {
       if (s.mask && s.mask[i] === "0") cls.push("is-wrong");
       if (s.solved) cls.push("is-solved");
       if (s.revealed.has(i)) cls.push("is-revealed");
+      const ov = overlay.get(i);
+      if (ov !== undefined) cls.push("is-preview");
+      const shown = ov ?? (ch === EMPTY ? "" : ch);
       const num = numAt.get(i);
       html += `<div class="${cls.join(" ")}" role="gridcell" data-cell="${i}" aria-label="${num ? `${num} ` : ""}${ch === EMPTY ? "空" : ch}">
-        ${num ? `<span class="xw-num">${num}</span>` : ""}<span class="xw-ch">${ch === EMPTY ? "" : esc(ch)}</span></div>`;
+        ${num ? `<span class="xw-num">${num}</span>` : ""}<span class="xw-ch">${esc(shown)}</span></div>`;
     }
     grid.innerHTML = html;
   }
@@ -268,12 +336,18 @@ class PlayView {
       </div></div>`;
     this.root.querySelector<HTMLElement>('[data-role="keyboard"]')!.style.display = "none";
     for (const b of this.root.querySelectorAll<HTMLButtonElement>('[data-action="check"],[data-action="reveal"],[data-action="clear"]')) b.disabled = true;
+    this.hidden.blur(); // 完成したら OS キーボードを閉じる
   }
 
   // ---- 入力 ----
 
   private bind(): void {
     const root = this.root;
+    // 盤面・キー・カギ・ボタンのタップで隠し input からフォーカスを奪わない（click はこの後も発火する）。
+    // これが無いとスマホはタップのたびに OS キーボードが閉じ、変換も途切れる
+    root.addEventListener("pointerdown", (ev) => {
+      if ((ev.target as HTMLElement).closest("[data-cell],[data-key],[data-slot],[data-action]")) ev.preventDefault();
+    });
     root.addEventListener("click", (ev) => {
       const target = ev.target as HTMLElement;
       const cell = target.closest<HTMLElement>("[data-cell]");
@@ -289,27 +363,60 @@ class PlayView {
       const key = actionFromEvent(ev);
       if (key) {
         ev.preventDefault();
+        this.flushPendingRomaji();
         this.onKey(key);
         this.focusHidden();
         return;
       }
-      const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
+      const btn = target.closest<HTMLElement>("[data-action]");
+      const action = btn?.dataset.action;
+      if (action === "kb-mode") this.setKbMode(btn!.dataset.mode === "screen" ? "screen" : "device");
       if (action === "check") void this.check();
       if (action === "reveal") void this.reveal();
       if (action === "clear") this.clearAll();
       if (action === "share") void this.share();
     });
 
-    // 物理キーボード（IME 含む）: 隠し input に入った文字を順に盤面へ
-    this.hidden.addEventListener("input", () => {
-      if ((this.hidden as HTMLInputElement & { isComposing?: boolean }).isComposing) return;
-      this.consumeHidden();
+    // 物理キーボード・OS キーボード（IME 含む）: 隠し input の value が唯一の真実。読んだら必ず空にするので、
+    // input と compositionend の発火順がブラウザで違っても（Chrome: input→compositionend、Firefox/Safari: 逆）
+    // 後から来た方は "" を読んで何もしない。変換中の input だけは無視する
+    this.hidden.addEventListener("compositionstart", () => {
+      this.composing = true;
+      this.preview = "";
     });
-    this.hidden.addEventListener("compositionend", () => this.consumeHidden());
+    this.hidden.addEventListener("compositionupdate", (ev) => {
+      this.preview = romajiToKana(ev.data ?? "");
+      this.renderGrid();
+    });
+    this.hidden.addEventListener("input", (ev) => {
+      if ((ev as InputEvent).isComposing || this.composing) return;
+      this.consumeHidden(false);
+    });
+    this.hidden.addEventListener("compositionend", () => {
+      this.composing = false;
+      this.preview = "";
+      this.consumeHidden(true);
+    });
+    this.hidden.addEventListener("blur", () => {
+      // 末尾の n を確定し、compositionend を出さない Android IME の値も拾う
+      this.composing = false;
+      this.preview = "";
+      this.consumeHidden(true);
+    });
     this.hidden.addEventListener("keydown", (ev) => {
-      if (ev.isComposing) return;
+      // 229 = Chrome/Edge が IME 処理中に出す "Process"
+      if (ev.isComposing || ev.keyCode === 229 || this.composing) return;
+      if (ev.key === "Backspace") {
+        ev.preventDefault();
+        if (this.romaji && this.romaji !== "N") this.popRomaji();
+        else {
+          this.romaji = "";
+          this.onKey({ type: "delete" });
+        }
+        return;
+      }
       const map: Record<string, KeyAction> = {
-        Backspace: { type: "delete" },
+        Delete: { type: "delete" },
         ArrowLeft: { type: "prev" },
         ArrowRight: { type: "next" },
         ArrowUp: { type: "prev" },
@@ -319,30 +426,113 @@ class PlayView {
       const a = map[ev.key];
       if (a) {
         ev.preventDefault();
+        this.flushPendingRomaji();
         this.onKey(a);
       } else if (ev.key === "Tab") {
         ev.preventDefault();
+        this.flushPendingRomaji();
         this.nextSlot(ev.shiftKey ? -1 : 1);
       } else if (ev.key === "Enter") {
+        // Enter は IME の確定キー（Safari は確定の Enter を compositionend の後に isComposing=false で届ける）。
+        // 単独では答え合わせしない。Ctrl/⌘+Enter だけ答え合わせ
         ev.preventDefault();
-        void this.check();
+        this.flushPendingRomaji();
+        this.refresh();
+        if (ev.ctrlKey || ev.metaKey) void this.check();
       }
+      // それ以外（文字キー）は preventDefault しない → input イベントで受ける
     });
   }
 
-  private consumeHidden(): void {
-    const text = normalizeKana(this.hidden.value);
-    this.hidden.value = "";
-    for (const ch of text) if (isGridKana(ch)) this.onKey({ type: "char", ch });
+  /** 隠し input の値を盤面へ。wordEnd なら未確定ローマ字も確定する */
+  private consumeHidden(wordEnd: boolean): void {
+    if (this.consuming) return;
+    this.consuming = true;
+    try {
+      const raw = this.hidden.value;
+      if (raw) this.hidden.value = "";
+      const r = feedText(this.romaji, raw);
+      this.romaji = wordEnd ? "" : r.buf;
+      this.typeText(r.out + (wordEnd ? flushRomaji(r.buf) : ""));
+      this.refresh();
+    } finally {
+      this.consuming = false;
+    }
+  }
+
+  /** 文字列をカーソルから語に沿って書く（盤面に入れられる文字だけ）。IME 確定・画面キーボードの共通経路 */
+  private typeText(text: string): void {
+    const s = this.s;
+    if (s.solved) return;
+    const chars = Array.from(text).filter(isGridKana);
+    if (chars.length === 0) return;
+    const p = planPlacement(this.currentSlot(), s.cursor, chars, s.revealed);
+    for (const w of p.writes) {
+      s.cells[w.cell] = w.ch;
+      if (s.mask) s.mask[w.cell] = "_";
+    }
+    s.cursor = p.cursor;
+    this.lastTyped = p.writes.length ? p.writes[p.writes.length - 1]!.cell : null;
+    if (p.writes.length) this.saveProgress();
+  }
+
+  /** 未確定ローマ字を確定（n → ン、他は捨てる）。カーソル移動・タップ・Enter の前に呼ぶ */
+  private flushPendingRomaji(): void {
+    const out = flushRomaji(this.romaji);
+    this.romaji = "";
+    if (out) this.typeText(out);
+  }
+
+  private popRomaji(): void {
+    this.romaji = this.romaji === "N" ? "" : this.romaji.slice(0, -1);
+    this.refresh();
+  }
+
+  /** 変換中に別のマス等をタップしたとき: blur でブラウザ自身に確定させる（compositionend → consumeHidden）。呼び出し側が後で focus し直す */
+  private commitComposition(): void {
+    if (!this.composing) return;
+    this.hidden.blur();
+    this.composing = false;
+    this.preview = "";
   }
 
   private focusHidden(): void {
-    // モバイルでは画面内キーボードを使う（inputmode=none で OS キーボードを出さない）
+    // 端末キーボードのスマホで、既にフォーカスがあるのにキーボードが閉じている（Android の戻るキー等）と
+    // focus() だけでは再表示されないので、一度 blur してから focus する
+    if (this.kbMode === "device" && !finePointer() && document.activeElement === this.hidden) this.hidden.blur();
     this.hidden.focus({ preventScroll: true });
+  }
+
+  /** 隠し input をカーソルのマスに重ねる（IME の候補窓がマスの横に出る。iOS は盤面へスクロールする） */
+  private placeHidden(): void {
+    const cell = this.root.querySelector<HTMLElement>(`[data-cell="${this.s.cursor}"]`);
+    if (!cell) return;
+    const st = this.hidden.style;
+    st.left = `${cell.offsetLeft}px`;
+    st.top = `${cell.offsetTop}px`;
+    st.width = `${cell.offsetWidth}px`;
+    st.height = `${cell.offsetHeight}px`;
+  }
+
+  private setKbMode(mode: KbMode): void {
+    if (mode === this.kbMode) return;
+    this.commitComposition();
+    this.flushPendingRomaji();
+    this.kbMode = mode;
+    writeKbMode(this.deps.storage, mode);
+    this.root.querySelector<HTMLElement>('[data-role="keyboard"]')!.innerHTML = keyboardHtml(mode);
+    // inputmode の変更はクリックのジェスチャ内で blur → focus しないと iOS が反映しない
+    this.hidden.setAttribute("inputmode", mode === "screen" ? "none" : "text");
+    this.hidden.blur();
+    this.refresh();
+    this.focusHidden();
   }
 
   private onCellTap(i: number): void {
     if (this.s.cells[i] === BLACK) return;
+    this.commitComposition();
+    this.flushPendingRomaji();
+    this.lastTyped = null;
     if (i === this.s.cursor) {
       this.toggleDir();
     } else {
@@ -356,6 +546,9 @@ class PlayView {
   private selectSlot(id: string): void {
     const slot = this.s.slots.find((x) => x.id === id);
     if (!slot) return;
+    this.commitComposition();
+    this.flushPendingRomaji();
+    this.lastTyped = null;
     this.s.dir = slot.dir;
     this.s.cursor = slot.cells.find((c) => this.s.cells[c] === EMPTY) ?? slot.cells[0]!;
     this.refresh();
@@ -385,22 +578,20 @@ class PlayView {
     const slot = this.currentSlot();
     switch (a.type) {
       case "char": {
-        if (s.revealed.has(s.cursor)) {
-          this.move(1);
-          break;
-        }
-        this.setCell(s.cursor, a.ch);
-        this.move(1);
+        this.typeText(a.ch);
         break;
       }
       case "dakuten":
       case "handakuten": {
-        const ch = s.cells[s.cursor]!;
-        if (ch === EMPTY || s.revealed.has(s.cursor)) break;
-        this.setCell(s.cursor, a.type === "dakuten" ? toggleDakuten(ch) : toggleHandakuten(ch));
+        // 打った直後はカーソルが次のマスに進んでいるので、直前に書いたマスに掛ける（カ → ゛ → ガ）
+        const target = this.lastTyped ?? s.cursor;
+        const ch = s.cells[target]!;
+        if (ch === EMPTY || ch === BLACK || s.revealed.has(target)) break;
+        this.setCell(target, a.type === "dakuten" ? toggleDakuten(ch) : toggleHandakuten(ch));
         break;
       }
       case "delete": {
+        this.lastTyped = null;
         if (s.cells[s.cursor] !== EMPTY && !s.revealed.has(s.cursor)) {
           this.setCell(s.cursor, EMPTY);
         } else if (slot) {
@@ -413,12 +604,15 @@ class PlayView {
         break;
       }
       case "prev":
+        this.lastTyped = null;
         this.move(-1);
         break;
       case "next":
+        this.lastTyped = null;
         this.move(1);
         break;
       case "toggleDir":
+        this.lastTyped = null;
         this.toggleDir();
         break;
     }
@@ -442,6 +636,7 @@ class PlayView {
   private refresh(): void {
     this.renderGrid();
     this.renderClueState();
+    this.placeHidden();
   }
 
   private clearAll(): void {
@@ -449,8 +644,11 @@ class PlayView {
     if (s.solved) return;
     for (let i = 0; i < CELLS; i++) if (s.cells[i] !== BLACK && !s.revealed.has(i)) s.cells[i] = EMPTY;
     s.mask = null;
+    this.romaji = "";
+    this.lastTyped = null;
     this.saveProgress();
     this.refresh();
+    if (finePointer()) this.focusHidden();
   }
 
   // ---- 永続化・タイマー ----
@@ -506,6 +704,7 @@ class PlayView {
       this.recordResult(r.correct, r.total, r.solved);
       this.refresh();
       if (r.solved) this.renderSolved();
+      else if (finePointer()) this.focusHidden();
     } catch (e) {
       const key = errorKey(e);
       showToast(key === "CHECK_LIMIT" ? "答え合わせの回数が上限に達しました" : errorMessage(e), true);
@@ -533,6 +732,7 @@ class PlayView {
       s.reveals++;
       this.saveProgress();
       this.refresh();
+      if (finePointer()) this.focusHidden();
       showToast(`${slot.dir === "A" ? "ヨコ" : "タテ"} ${slot.num} の 1 文字を表示しました`);
     } catch (e) {
       showToast(errorMessage(e), true);

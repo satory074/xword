@@ -31,6 +31,8 @@ npm run wiki -- --file animals              # ja.wikipedia の要約・閲覧数
 - **難易度の調整は `scripts/gen/level.ts` の `DEFAULT_PROFILE` だけ**。公平性ルール（lv3 は完全交差の語のみ・実効難易度 3 同士は交差しない・二重解注意の語は lv1・**新出語は完全交差のみ・新出同士は交差しない・新出は lv1**）は `lintFill` / `lintLevels` が最後の砦。配分未達は warning で埋めは捨てない（新出 0 の候補だけは保留して他を少し試す）
 - **語彙が増える出題（algo 3）**: difficulty ≥ 2 の語は「新出」（履歴に無い語）と「復習」（過去に出た語）に分かれ、判定は `history.ts` の `schedule()` が単一の情報源（`recency` 未登録 = 新出、`review` に載る = 復習）。クールダウンは difficulty 別: d1 は 10 日、難語は `HARD_SCHEDULE`（1 回目 3〜7 日後がウィンドウ、2 回目 14〜30 日、3 回目以降 45 日空ける）。`out/*.json` の `learn` に新出/復習のスロット id。研究上の根拠は README「語彙が増える出題」
 - `gen --force` で作り直すとき、開始日以降の旧 `out/*.json` は履歴に数えない（数えると直近の語が全部クールダウンに入る）。`schedule()` も未来日は数えない。`ALGO_VERSION` を上げると同じ日付でも別の問題になる（現在 3）
+- **入力は隠し `<input>` が受ける**（`puzzle.ts`）。`value` が唯一の真実で、`consumeHidden` は読んだら必ず空にする（`input`／`compositionend` の発火順がブラウザで違っても欠けず重複しない）。変換中の判定は **InputEvent の** `isComposing`（要素には無い）＋ `composing` フラグ。隠し input は `.xw-grid` の**兄弟**に置く（`renderGrid` が innerHTML を差し替えるので子に入れると消える）。`pointerdown` の `preventDefault` でフォーカスを守る。Enter 単独は答え合わせしない（IME 確定と衝突。Ctrl/⌘+Enter）
+- **入力モード**は `xword:kb`（`device`＝端末のキーボード（既定）/ `screen`＝50 音パネル）。`inputmode` の切替はクリック内で blur→focus しないと iOS が反映しない。ローマ字は `src/lib/romaji.ts`（バッファの `"N"` は nn の 2 つ目）。゛゜は `lastTyped`（直前に書いたマス）に掛ける
 - **ヒントは 1 マス 1 文字**（`reveal_cell`）。`solves.reveals` は 003 以降「文字数」（002 までの行は語数）。旧 `reveal_slot` はキャッシュされた旧クライアント用に残し、`004_drop_reveal_slot.sql` で削除する
 - Supabase 無料枠は 1 週間無アクセスで停止 → `.github/workflows/keepalive.yml` が毎日 RPC を叩く
 - OAuth の redirectTo は base path `/xword/` 込み（`app/auth.ts`）。Supabase の Redirect URLs に localhost と本番の両方を登録

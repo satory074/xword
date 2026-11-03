@@ -29,16 +29,28 @@ npm run push                              # 未来日の問題を Supabase に�
 **解答はサーバーにしかない。** 問題（盤面・カギ）も `get_puzzle` RPC が JST 今日以前だけ返す。答え合わせは `check_grid` RPC がサーバー側で採点し、ログイン中なら `solves` に記録する。ヒントは `reveal_cell` RPC がカーソルのマス **1 文字だけ**返す（語を丸ごと見せると想起が消えて定着しない）。未ログインの結果は localStorage に残り、ログイン時に `sync_results` RPC がサーバーで再採点して取り込む（クライアントの「解けた」は信用しない）。
 
 ```
-src/lib/    純 TS（DOM・supabase 依存なし）: kana（正規化）/ grid（盤面・採点）/ bank（語彙索引）/ rng / date（JST）
+src/lib/    純 TS（DOM・supabase 依存なし）: kana（正規化）/ romaji（ローマ字→カナ）/ grid（盤面・採点）/ bank（語彙索引）/ rng / date（JST）
             storage（端末保存・記録の優劣）/ stats（連続日数）/ share / errors / types（Api I/F = 境界）
 src/app/    DOM 層: supabase / auth / api（Api 実装）/ real（エントリ）/ header / ui
-            puzzle（盤面・入力・答え合わせ）/ keyboard（50 音）/ sync / archive / mypage
+            puzzle（盤面・入力・答え合わせ）/ keyboard（50 音パネル・入力モード）/ sync / archive / mypage
 src/pages/  index（今日 / ?d=YYYY-MM-DD）/ archive / mypage
 scripts/    gen.ts（生成 CLI）/ gen/{fill,lint,level,history,generate,preview,bankio}.ts / push.ts / stress.ts / bankstats.ts / wiki.ts
 data/templates/7x7.json   黒マステンプレート（7 種とその転置・反転のうち、実語彙で埋まることを確認した変種のみ）
 supabase/migrations/      001_schema.sql（テーブル・RLS・不変トリガー）/ 002_rpc.sql（RPC・権限）/ 003_reveal_cell.sql（1 文字ヒント）/ 004_drop_reveal_slot.sql
 ../xword-private/         words/*.json（語彙バンク）・out/（生成結果、解答入り。難語の間隔反復の履歴でもある）← 公開しない
 ```
+
+### 入力（PC のキーボード・スマホの OS キーボード・50 音パネル）
+
+盤面の文字は **端末のキーボードで打つ**のが既定（`puzzle.ts` の隠し `<input>` が受ける）。PC は日本語 IME でも IME オフのローマ字でもよく、スマホはマスをタップすると OS のキーボードが出る。操作列の「50音パネル」で画面内の 50 音キーボードに切り替えられる（端末ごとに `xword:kb` に保存。50 音パネル中は `inputmode="none"` で OS キーボードを出さない）。
+
+- IME で語をまとめて確定すると、カーソルから語に沿って順に入る。変換中の文字はマスに薄く仮表示され、盤面には書かれない。語の末尾で打ち切る（余りは捨てる）。ヒントで開いたマスは 1 文字消費して通過する。
+- 隠し input の `value` が唯一の真実で、読んだら必ず空にする。`input` と `compositionend` の発火順はブラウザで違う（Chrome: input→compositionend、Firefox/Safari: 逆）が、後から来た方は空を読んで何もしないので、欠けも重複も起きない。
+- **Enter は IME の確定専用**で、答え合わせはボタンか **Ctrl/⌘+Enter**（Safari は確定の Enter を `compositionend` の後に `isComposing=false` で届けるので、旗では区別できない）。
+- IME オフのローマ字は `src/lib/romaji.ts` で変換（Google IME 準拠。ヘボン・訓令の両方、`nn`・`n'`・n+子音 → ン、`kk` → ツ）。未確定の綴りはカーソルのマスに薄く表示し、Backspace で 1 字戻る。語末の `n` はカーソル移動・タップ・Enter で ン に確定。
+- キー: Backspace / Delete 削除、矢印で移動、Space で方向切替、Tab / Shift+Tab で次・前のカギ。
+- 50 音パネルの ゛゜は **直前に打った文字**に付く（打った直後はカーソルが次のマスに進んでいるため）。
+- マス・キー・カギ・ボタンの `pointerdown` を `preventDefault` して隠し input からフォーカスを奪わない（スマホでタップのたびに OS キーボードが閉じるのを防ぐ）。隠し input はカーソルのマスに重ねてあり、PC の IME 候補窓がマスの横に出る。
 
 ### 作問ルール（生成器が強制するもの）
 

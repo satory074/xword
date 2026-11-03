@@ -2,11 +2,13 @@
 // 実行: npx tsx scripts/domtest.ts（Supabase には一切接続しない）
 // 不変条件: ①未ログインで解いた結果が端末に残る ②ログイン後の起動で未同期分だけが 1 回同期される
 //           ③同期済みなら再送しない ④誤りマスは答え合わせで赤くなり、入力すると消える
+//           ⑤IME で語をまとめて確定すると全文字が盤面に入り、変換中は何も書かれず、確定の Enter で答え合わせされない
 import { JSDOM } from "jsdom";
 import { loadBank, type WordEntry } from "../src/lib/bank";
 import { deriveSlots, scoreCells } from "../src/lib/grid";
+import { toHiragana } from "../src/lib/kana";
 import { createRng } from "../src/lib/rng";
-import { memoryKV, readResults } from "../src/lib/storage";
+import { memoryKV, progressKey, readResults } from "../src/lib/storage";
 import type { Api, AppDeps, AuthCtl, KV, SessionInfo, SolveRow, SyncItem } from "../src/lib/types";
 import { readTemplates } from "./gen/bankio";
 import { generatePuzzle } from "./gen/generate";
@@ -218,6 +220,74 @@ function typeIntoSlot(dom: ReturnType<typeof setupDom>, slotId: string, text: st
   assert(world.calls.sync.length === 1, "同期済みは再送しない");
   assert(world.calls.fetch === 1, "代わりに自分の記録を取得する");
   console.log("[sync] OK");
+}
+
+// ---- ⑤ IME: 変換中は何も書かれず、確定で全文字が入る。確定の Enter は答え合わせにならない ----
+{
+  const kv: KV = memoryKV();
+  const world = makeWorld();
+  const deps: AppDeps = { api: world.api, auth: makeAuth(null), storage: kv, now: () => NOW };
+  const dom = await bootPuzzle(deps);
+  const win = dom.root.ownerDocument.defaultView!;
+  const slot = slots[0]!;
+  const answer = gen.answers[slot.id]!;
+  const hira = toHiragana(answer); // IME はひらがなで確定しても normalizeKana でカタカナになる
+  dom.root.querySelector<HTMLElement>(`[data-slot="${slot.id}"]`)!.click();
+  const input = dom.hidden();
+  assert(input.getAttribute("inputmode") === "text", "既定は端末のキーボード（inputmode=text）");
+
+  // Chrome の順: compositionstart → input(isComposing) × N → compositionend
+  input.dispatchEvent(new win.CompositionEvent("compositionstart", { data: "" }));
+  for (let i = 1; i <= hira.length; i++) {
+    const part = hira.slice(0, i);
+    input.value = part;
+    input.dispatchEvent(new win.CompositionEvent("compositionupdate", { data: part }));
+    input.dispatchEvent(new win.InputEvent("input", { isComposing: true, inputType: "insertCompositionText", data: part }));
+  }
+  assert(input.value === hira, "変換中は隠し input の値を消さない");
+  assert(kv.get(progressKey(DATE)) === null, "変換中は盤面に書かない（途中保存が無い）");
+  assert(dom.root.querySelectorAll(".xw-cell.is-preview").length === answer.length, "変換中の文字がマスに仮表示される");
+  input.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", isComposing: true }));
+  await tick();
+  assert(world.calls.check === 0, "確定の Enter（変換中）は答え合わせにならない");
+  input.dispatchEvent(new win.CompositionEvent("compositionend", { data: hira }));
+  input.dispatchEvent(new win.InputEvent("input", { isComposing: false, inputType: "insertText" })); // Firefox/Safari は後から input が来る
+  input.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", isComposing: false })); // Safari は確定の Enter が後から来る
+  await tick();
+  assert(world.calls.check === 0, "確定後の Enter 単独でも答え合わせにならない");
+  const got = slot.cells.map((c) => dom.root.querySelector(`[data-cell="${c}"] .xw-ch`)!.textContent).join("");
+  assert(got === answer, `確定した全文字が語に入る（${got} / ${answer}）`);
+  assert(dom.root.querySelectorAll(".xw-cell.is-preview").length === 0, "確定後に仮表示は残らない");
+  const filled = dom.root.querySelectorAll<HTMLElement>("[data-cell]");
+  const outside = [...filled].filter((el) => !slot.cells.includes(Number(el.dataset.cell)) && el.querySelector(".xw-ch")!.textContent !== "");
+  assert(outside.length === 0, "語の外のマスには何も入らない");
+  assert(input.value === "", "確定後の隠し input は空");
+
+  // IME オフのローマ字: 1 字ずつ input が来る。n は語末で確定
+  dom.root.querySelector<HTMLElement>('[data-action="clear"]')!.click();
+  dom.root.querySelector<HTMLElement>(`[data-slot="${slot.id}"]`)!.click();
+  for (const ch of "pan") {
+    input.value = ch;
+    input.dispatchEvent(new win.InputEvent("input", { isComposing: false, inputType: "insertText", data: ch }));
+  }
+  const c0 = slot.cells[0]!;
+  const c1 = slot.cells[1]!;
+  assert(dom.root.querySelector(`[data-cell="${c0}"] .xw-ch`)!.textContent === "パ", "pa → パ");
+  assert(dom.root.querySelector(`[data-cell="${c1}"]`)!.classList.contains("is-preview"), "未確定の n はカーソルのマスに仮表示");
+  input.dispatchEvent(new win.KeyboardEvent("keydown", { key: "ArrowRight" }));
+  assert(dom.root.querySelector(`[data-cell="${c1}"] .xw-ch`)!.textContent === "ン", "カーソル移動で n → ン が確定");
+
+  // ゛は直前に打った文字に付く（カーソルは進んでいる）
+  dom.root.querySelector<HTMLElement>('[data-action="clear"]')!.click();
+  typeIntoSlot(dom, slot.id, "カ");
+  dom.root.querySelector<HTMLElement>('[data-key="dakuten"]')!.click();
+  assert(dom.root.querySelector(`[data-cell="${c0}"] .xw-ch`)!.textContent === "ガ", "カ → ゛ → ガ");
+
+  // 切替: 50 音パネルにすると OS キーボードを出さない（inputmode=none）。端末ごとに保存
+  dom.root.querySelector<HTMLElement>('[data-action="kb-mode"]')!.click();
+  assert(dom.root.querySelector(".kb.kb-screen") !== null && input.getAttribute("inputmode") === "none", "50 音パネルに切り替わる");
+  assert(kv.get("xword:kb") === "screen", "切替は端末に保存される");
+  console.log("[ime] OK");
 }
 
 console.log("✅ domtest passed");
