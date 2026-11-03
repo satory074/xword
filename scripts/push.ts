@@ -41,8 +41,8 @@ if (values.sql) {
         ` on conflict (puzzle_date) do update set spec = excluded.spec, solution = excluded.solution, answers = excluded.answers, version = case when puzzles.solution = excluded.solution then puzzles.version else puzzles.version + 1 end;`,
     );
   }
-  process.stdout.write(lines.join("\n") + "\n");
-  process.exit(0);
+  // 書き終わりを待ってから exit。なお tsx 経由でパイプに流すと 64 KiB で切れるので、必ずファイルにリダイレクトする（> out.sql）
+  process.stdout.write(lines.join("\n") + "\n", () => process.exit(0));
 }
 
 if (existsSync(".env")) process.loadEnvFile(".env");
